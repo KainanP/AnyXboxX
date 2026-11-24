@@ -378,11 +378,14 @@ COMPARE = re.compile(r"^v_cmp(x?)_(f|lt|eq|le|gt|lg|ge|ne|neq|t|tru|o|u|nge|nlg|
                      r"_(f32|u32|i32)$")
 CONSTANT_TESTS = {"f": "false", "t": "true", "tru": "true"}
 # Tests flottants non ordonnés (vrais si une source est NaN) : négation du test ordonné.
+# NaN testé à part : sans cela, le pilote AMD RDNA 2 confond comparaisons ordonnées et non ordonnées (#134).
 UNORDERED_F32 = {
     "o": "(!IsNanF32({a}) && !IsNanF32({b}))", "u": "(IsNanF32({a}) || IsNanF32({b}))",
-    "nge": "!(asfloat({a}) >= asfloat({b}))", "nlg": "!(asfloat({a}) < asfloat({b}) || asfloat({a}) > asfloat({b}))",
-    "ngt": "!(asfloat({a}) > asfloat({b}))", "nle": "!(asfloat({a}) <= asfloat({b}))",
-    "nlt": "!(asfloat({a}) < asfloat({b}))", "class": "((({b}) >> ClassF32({a})) & 1u) != 0u",
+    "nge": "(IsNanF32({a}) || IsNanF32({b}) || !(asfloat({a}) >= asfloat({b})))",
+    "nlg": "(IsNanF32({a}) || IsNanF32({b}) || !(asfloat({a}) < asfloat({b}) || asfloat({a}) > asfloat({b})))",
+    "ngt": "(IsNanF32({a}) || IsNanF32({b}) || !(asfloat({a}) > asfloat({b})))",
+    "nle": "(IsNanF32({a}) || IsNanF32({b}) || !(asfloat({a}) <= asfloat({b})))",
+    "nlt": "(IsNanF32({a}) || IsNanF32({b}) || !(asfloat({a}) < asfloat({b})))", "class": "((({b}) >> ClassF32({a})) & 1u) != 0u",
 }
 
 
@@ -398,7 +401,9 @@ def compare_condition(name, a, b):
     cast = {"f32": "asfloat", "u32": "", "i32": "asint"}[kind]
     symbol = COMPARE_OPERATORS[operation]
     if operation == "lg" and kind == "f32":            # ordonné et différent
-        return f"({cast}({a}) < {cast}({b}) || {cast}({a}) > {cast}({b}))"
+        return f"(!IsNanF32({a}) && !IsNanF32({b}) && ({cast}({a}) < {cast}({b}) || {cast}({a}) > {cast}({b})))"
+    if kind == "f32" and operation in ("lt", "le", "gt", "ge"):
+        return f"(!IsNanF32({a}) && !IsNanF32({b}) && {cast}({a}) {symbol} {cast}({b}))"
     return f"{cast}({a}) {symbol} {cast}({b})"
 
 

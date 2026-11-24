@@ -8,7 +8,7 @@ qui les nomme, ce qui mesure ce qui reste à traduire.
 """
 import struct
 
-from emu import (rdna2, rdna2_exec_cmp64, rdna2_exec_ext, rdna2_exec_format, rdna2_exec_graphics,
+from emu import (rdna2, rdna2_exec_cmp64, rdna2_exec_dot, rdna2_exec_ext, rdna2_exec_format, rdna2_exec_graphics,
                  rdna2_exec_image, rdna2_exec_memory, rdna2_exec_movrel, rdna2_exec_vop3, rdna2_exec_wide)
 from emu.rdna2_exec_ops import SCALAR, VECTOR, VECTOR_COMPARE, VECTOR_NO_OPERATION, BRANCHES, float_bits
 
@@ -145,6 +145,12 @@ def step(wave, data):
         rdna2_exec_vop3.execute(wave, name, opcode, word, literal)
         wave.pc += size * rdna2.DWORD
         return True
+    if family == "VOP3P":
+        word = int.from_bytes(data[wave.pc:wave.pc + 2 * rdna2.DWORD], "little")
+        literal = struct.unpack_from("<I", data, wave.pc + 2 * rdna2.DWORD)[0] if size > 2 else None
+        rdna2_exec_dot.execute(wave, name, word, literal)
+        wave.pc += size * rdna2.DWORD
+        return True
     word = struct.unpack_from("<I", data, wave.pc)[0]
     literal = struct.unpack_from("<I", data, wave.pc + rdna2.DWORD)[0] if size > 1 else None
     fields = _fields(family, word)
@@ -249,6 +255,8 @@ def executable(family, name):
     """Vrai si l'interpréteur exécute cette instruction dans cet encodage."""
     if family == "VOP3":
         return name in rdna2_exec_vop3.EXECUTABLE
+    if family == "VOP3P":
+        return rdna2_exec_dot.supports(name)
     if family in rdna2_exec_graphics.FAMILIES:
         return rdna2_exec_graphics.supports(family, name)
     if family in rdna2_exec_image.FAMILIES:

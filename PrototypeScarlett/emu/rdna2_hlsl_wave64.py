@@ -13,7 +13,7 @@ contre l'interpréteur de référence en wave64 (`rdna2_exec.Wave(lanes=64)`).
 """
 import re
 
-from emu import (rdna2, rdna2_hlsl, rdna2_hlsl_div, rdna2_hlsl_ext, rdna2_hlsl_format, rdna2_hlsl_image,
+from emu import (rdna2, rdna2_hlsl, rdna2_hlsl_div, rdna2_hlsl_dot, rdna2_hlsl_ext, rdna2_hlsl_format, rdna2_hlsl_image,
                  rdna2_hlsl_wide)
 from emu.rdna2_exec_vop3 import Fields, float_inputs
 from emu.rdna2_hlsl import CARRY, SCALAR_FAMILIES, _fields, _literal, _words, modified
@@ -214,7 +214,7 @@ def statements(data, instruction, finish="return;", special=None):
 def translate(data, sgprs=None):
     """Texte HLSL d'un programme RDNA 2 wave64 ; `sgprs` : valeurs initiales {numéro: valeur}."""
     helpers = "\n".join((ALU_HELPERS, rdna2_hlsl_wide.HELPERS, rdna2_hlsl_div.HELPERS, rdna2_hlsl_image.HELPERS,
-                         rdna2_hlsl_format.HELPERS))
+                         rdna2_hlsl_format.HELPERS, rdna2_hlsl_dot.HELPERS))
     prelude = PRELUDE.replace("[numthreads", helpers + "\n[numthreads", 1)
     lines = rdna2_hlsl.body(data, sgprs, branches=BRANCHES64, translate_one=statements)
     return "\n".join([prelude.rstrip("\n"), *lines, "}", ""])

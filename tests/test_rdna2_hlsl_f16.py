@@ -29,8 +29,8 @@ ROWS = [(0x3C00, 0x4000, 0x3C00, 0x3F80_0000), (0x3C01, 0x3C01, 0x0000, 0x477F_F
         (0x3C00, 0xFFE8, 0x0000, 0x0000_0000), (0x3C00, 0xFFE7, 0x8000, 0x8000_0000),
         (0x3E00, 0xFFE7, 0x3C00, 0x4780_0000), (0x3C00, 0x7FFF, 0xBC00, 0x3880_1000),
         (0x3C00, 0x8000, 0x3C00, 0x3380_0000), (0xBC00, 0x0010, 0x7BFF, 0xC000_0000)]
-ROWS += [tuple(random.Random(115 + lane).getrandbits(16) for _ in range(3)) + (random.Random(lane).getrandbits(32),)
-         for lane in range(len(ROWS), 32)]
+ROWS += [tuple(draw.getrandbits(bits) for bits in (16, 16, 16, 32))       # un générateur par ligne : a, b, c, w
+         for draw in (random.Random(115 + lane) for lane in range(len(ROWS), 32))]
 # v1, v2, v4 ← a, b, c (moitiés hautes marquées par la ligne), v5 ← w, v6 ← graine de la destination.
 LOADS = [word for slot, register in enumerate((1, 2, 4, 5, 6))
          for word in global_("global_load_dword", addr=31, vdst=register, saddr=0, offset=slot * 128)]

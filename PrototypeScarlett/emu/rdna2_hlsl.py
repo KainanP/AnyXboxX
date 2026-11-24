@@ -11,7 +11,8 @@ from pathlib import Path
 import struct
 import sys
 
-from emu import rdna2, rdna2_exec_wide, rdna2_hlsl_ext, rdna2_hlsl_image, rdna2_hlsl_wide
+from emu import (rdna2, rdna2_exec_div, rdna2_exec_wide, rdna2_hlsl_div, rdna2_hlsl_ext, rdna2_hlsl_image,
+                 rdna2_hlsl_wide)
 from emu.rdna2_exec_ops import signed
 from emu.rdna2_exec_ops import VECTOR_NO_OPERATION
 from emu.rdna2_exec_vop3 import MAD64, Fields, float_inputs, float_result
@@ -169,6 +170,8 @@ def _vop3(name, opcode, fields, literal):
     if name in rdna2_exec_wide.OPERATIONS:
         return rdna2_hlsl_wide.statements(name, fields.sources, fields.vdst, ACTIVE, fields.abs, fields.neg,
                                           fields.clamp, fields.omod)
+    if name in rdna2_exec_div.OPERATIONS:
+        return rdna2_hlsl_div.statements(name, fields, literal, ACTIVE)
     if name == "v_writelane_b32":
         return [f"if (lane == ({b} & 31u)) v[{fields.vdst}] = {a};"]
     if name not in VECTOR:
@@ -227,7 +230,7 @@ def _leaders(data, instructions):
 
 def translate(data, sgprs=None):
     """Texte HLSL d'un programme RDNA 2 ; `sgprs` : valeurs initiales {numéro: valeur}."""
-    helpers = ALU_HELPERS + "\n" + rdna2_hlsl_wide.HELPERS + "\n" + rdna2_hlsl_image.HELPERS
+    helpers = "\n".join((ALU_HELPERS, rdna2_hlsl_wide.HELPERS, rdna2_hlsl_div.HELPERS, rdna2_hlsl_image.HELPERS))
     prelude = PRELUDE.replace("[numthreads", helpers + "\n[numthreads", 1)
     return "\n".join([prelude.rstrip("\n"), *body(data, sgprs), "}", ""])
 
@@ -323,7 +326,8 @@ def body(data, sgprs=None, finish="return;", special=None):
 def coverage_names():
     """Mnémoniques que le recompilateur sait traduire (hors mémoire, comptée à part)."""
     return (set(SCALAR) | set(VECTOR) | set(BRANCHES) | set(CARRY) | VECTOR_NO_OPERATION | MAD64
-            | rdna2_hlsl_wide.TRANSLATED | {"s_endpgm", "v_readlane_b32", "v_writelane_b32", "v_readfirstlane_b32"})
+            | rdna2_hlsl_wide.TRANSLATED | rdna2_hlsl_div.TRANSLATED
+            | {"s_endpgm", "v_readlane_b32", "v_writelane_b32", "v_readfirstlane_b32"})
 
 
 __all__ = ["translate", "Untranslatable"]

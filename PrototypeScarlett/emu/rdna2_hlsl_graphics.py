@@ -4,11 +4,11 @@ Chaque invocation est un wave d'une ligne : `lane` vaut 0, EXEC vaut 1 et les op
 lignes (ballot, readlane) se réduisent à la ligne elle-même. La LDS (DS) n'existe pas dans
 ces étages : une instruction DS lève Untranslatable, comme tout export non pris en charge.
 """
-from emu import rdna2, rdna2_graphics as graphics, rdna2_hlsl_image, rdna2_hlsl_wide
+from emu import rdna2, rdna2_graphics as graphics, rdna2_hlsl_div, rdna2_hlsl_image, rdna2_hlsl_wide
 from emu.rdna2_hlsl import body
 from emu.rdna2_hlsl_ops import HELPERS as ALU_HELPERS, Untranslatable
 
-HELPERS = ALU_HELPERS + "\n" + rdna2_hlsl_wide.HELPERS + "\n" + rdna2_hlsl_image.HELPERS
+HELPERS = "\n".join((ALU_HELPERS, rdna2_hlsl_wide.HELPERS, rdna2_hlsl_div.HELPERS, rdna2_hlsl_image.HELPERS))
 ACTIVE = "((s[126] >> lane) & 1u) != 0"
 FINISH = "pc = END_PC; break;"
 

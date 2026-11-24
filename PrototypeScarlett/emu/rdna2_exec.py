@@ -8,7 +8,8 @@ qui les nomme, ce qui mesure ce qui reste à traduire.
 """
 import struct
 
-from emu import rdna2, rdna2_exec_ext, rdna2_exec_graphics, rdna2_exec_image, rdna2_exec_memory, rdna2_exec_vop3
+from emu import (rdna2, rdna2_exec_cmp64, rdna2_exec_ext, rdna2_exec_graphics, rdna2_exec_image,
+                 rdna2_exec_memory, rdna2_exec_vop3)
 from emu.rdna2_exec_ops import SCALAR, VECTOR, VECTOR_COMPARE, VECTOR_NO_OPERATION, BRANCHES, float_bits
 
 LANES = 32
@@ -131,6 +132,8 @@ def step(wave, data):
         SCALAR[name](wave, fields, literal)
     elif name in VECTOR_NO_OPERATION:
         pass
+    elif name in rdna2_exec_cmp64.COMPARE64 and family == "VOPC":
+        rdna2_exec_cmp64.execute(wave, name, (fields["src0"], VGPR_FIRST + fields["vsrc1"]), literal)
     elif name in VOP2_CARRY and family == "VOP2":
         if rdna2_exec_ext.is_ext(family, fields.get("src0")):
             raise Untranslated(f"instruction non traduite : {name} (SDWA/DPP)")
@@ -204,7 +207,7 @@ def run(data, wave=None, max_steps=MAX_STEPS):
 
 VOP2_CARRY = frozenset({"v_add_co_ci_u32", "v_sub_co_ci_u32", "v_subrev_co_ci_u32"})
 EXECUTABLE = frozenset({"s_endpgm", *SCALAR, *VECTOR, *VECTOR_COMPARE, *VECTOR_NO_OPERATION, *BRANCHES,
-                        *VOP2_CARRY})
+                        *VOP2_CARRY, *rdna2_exec_cmp64.COMPARE64})
 
 
 def executable(family, name):

@@ -94,6 +94,15 @@ uint FrexpMantF32(uint a) {
   if (e == 0u) m = (m << (23u - firstbithigh(m))) & 0x7FFFFFu;
   return (a & 0x80000000u) | (126u << 23) | m;
 }
+bool IsNanF32(uint a) {
+  return (a & 0x7FFFFFFFu) > 0x7F800000u;
+}
+uint ClassF32(uint a) {
+  uint e = (a >> 23) & 0xFFu, m = a & 0x7FFFFFu, n = a >> 31;
+  if (e == 0xFFu) return m != 0u ? ((m >> 22) & 1u) : (n != 0u ? 2u : 9u);
+  if (e == 0u) return m == 0u ? (n != 0u ? 5u : 6u) : (n != 0u ? 4u : 7u);
+  return n != 0u ? 3u : 8u;
+}
 uint AlignBit(uint hi, uint lo, uint s) {
   s &= 31u;
   return s == 0u ? lo : ((hi << (32u - s)) | (lo >> s));
@@ -365,8 +374,16 @@ VECTOR = {
     "v_madmk_f32": "asuint(mad(asfloat({a}), asfloat({k}), asfloat({b})))",
     "v_madak_f32": "asuint(mad(asfloat({a}), asfloat({b}), asfloat({k})))",
 }
-COMPARE = re.compile(r"^v_cmp(x?)_(f|lt|eq|le|gt|lg|ge|ne|neq|t|tru)_(f32|u32|i32)$")
+COMPARE = re.compile(r"^v_cmp(x?)_(f|lt|eq|le|gt|lg|ge|ne|neq|t|tru|o|u|nge|nlg|ngt|nle|nlt|class)"
+                     r"_(f32|u32|i32)$")
 CONSTANT_TESTS = {"f": "false", "t": "true", "tru": "true"}
+# Tests flottants non ordonnés (vrais si une source est NaN) : négation du test ordonné.
+UNORDERED_F32 = {
+    "o": "(!IsNanF32({a}) && !IsNanF32({b}))", "u": "(IsNanF32({a}) || IsNanF32({b}))",
+    "nge": "!(asfloat({a}) >= asfloat({b}))", "nlg": "!(asfloat({a}) < asfloat({b}) || asfloat({a}) > asfloat({b}))",
+    "ngt": "!(asfloat({a}) > asfloat({b}))", "nle": "!(asfloat({a}) <= asfloat({b}))",
+    "nlt": "!(asfloat({a}) < asfloat({b}))", "class": "((({b}) >> ClassF32({a})) & 1u) != 0u",
+}
 
 
 def compare_condition(name, a, b):
@@ -374,6 +391,10 @@ def compare_condition(name, a, b):
     operation, kind = found.group(2), found.group(3)
     if operation in CONSTANT_TESTS:
         return CONSTANT_TESTS[operation]
+    if operation in UNORDERED_F32:
+        if kind != "f32":
+            raise Untranslatable(f"non traduite en HLSL : {name}")
+        return UNORDERED_F32[operation].format(a=a, b=b)
     cast = {"f32": "asfloat", "u32": "", "i32": "asint"}[kind]
     symbol = COMPARE_OPERATORS[operation]
     if operation == "lg" and kind == "f32":            # ordonné et différent

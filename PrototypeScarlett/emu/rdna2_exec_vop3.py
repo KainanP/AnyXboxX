@@ -7,6 +7,7 @@ Sémantique d'après la documentation publique d'AMD (« RDNA 2 Instruction Set 
 """
 import math
 
+from emu import rdna2_exec_cmp64
 from emu.rdna2_exec_ops import (MASK32, VECTOR, VECTOR_COMPARE, _float_op, _fma, _legacy_fma, bits_float,
                                 float_bits, ldexp, signed)
 
@@ -114,7 +115,7 @@ CARRY = {
 }
 LANE_OPERATIONS = frozenset({"v_readlane_b32", "v_writelane_b32", "v_mbcnt_lo_u32_b32", "v_mbcnt_hi_u32_b32"})
 EXECUTABLE = frozenset(set(VECTOR) - {"v_readfirstlane_b32"} | set(VECTOR_COMPARE) | set(VECTOR3) | set(CARRY)
-                       | LANE_OPERATIONS)
+                       | LANE_OPERATIONS | set(rdna2_exec_cmp64.COMPARE64))
 
 
 class Fields:
@@ -156,6 +157,8 @@ def execute(wave, name, opcode, word, literal):
     fields = Fields(word)
     if name in LANE_OPERATIONS:
         return _lane_operation(wave, name, fields, literal)
+    if name in rdna2_exec_cmp64.COMPARE64:
+        return rdna2_exec_cmp64.execute(wave, name, fields.sources, literal, fields.vdst, fields.abs, fields.neg)
     if opcode < COMPARE_END:
         return _compare(wave, name, fields, literal)
     if name in CARRY:

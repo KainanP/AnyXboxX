@@ -47,6 +47,14 @@ uint SatF32ToU32(uint a) {
   if ((a & 0x7FFFFFFFu) > 0x7F800000u || x <= 0.0f) return 0u;
   return x >= 4294967296.0f ? 0xFFFFFFFFu : (uint)x;
 }
+uint FloorToI32(uint a, bool nearest) {
+  // v_cvt_flr/rpi_i32_f32 (mesures RDNA 2, VIctory #605) : NaN selon le signe ; rpi = floor(x + 0.5)
+  // exact, obtenu en comparant la fraction x - floor(x) (exacte en simple précision) à 0.5.
+  if ((a & 0x7FFFFFFFu) > 0x7F800000u) return (a >> 31) != 0u ? 0x80000000u : 0x7FFFFFFFu;
+  float x = asfloat(a), f = floor(x);
+  if (nearest && x - f >= 0.5f) f += 1.0f;
+  return SatF32ToI32(asuint(f));
+}
 uint SBfeU32(uint v, uint c) {
   uint w = (c >> 16) & 0x7Fu;
   if (w == 0u) return 0u;
@@ -346,8 +354,8 @@ VECTOR = {
     "v_mbcnt_hi_u32_b32": "{b}",
     "v_cndmask_b32": "((({c} >> lane) & 1u) != 0 ? {b} : {a})",
     "v_mul_hi_i32_i24": "MulHiI32(asuint((asint({a}) << 8) >> 8), asuint((asint({b}) << 8) >> 8))",
-    "v_cvt_flr_i32_f32": "SatF32ToI32(asuint(floor(asfloat({a}))))",
-    "v_cvt_rpi_i32_f32": "SatF32ToI32(asuint(floor(asfloat({a}) + 0.5f)))",
+    "v_cvt_flr_i32_f32": "FloorToI32({a}, false)",
+    "v_cvt_rpi_i32_f32": "FloorToI32({a}, true)",
     "v_cvt_off_f32_i4": "asuint((float)((asint({a}) << 28) >> 28) * 0.0625f)",
     "v_rcp_iflag_f32": "asuint(rcp(asfloat({a})))",
     "v_ffbh_i32": "LeadingSignsI32({a})",

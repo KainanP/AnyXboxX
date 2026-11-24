@@ -253,9 +253,14 @@ def _frexp_mantissa(bits):
     return bits if x == 0 or math.isinf(x) or math.isnan(x) else float_bits(math.frexp(x)[0])
 
 
-def _f32(x):
-    """Arrondi en simple précision, comme une opération flottante 32 bits du GPU."""
-    return F(float_bits(x))
+def _round_to_int(bits, rounding):
+    """v_cvt_flr/rpi_i32_f32 mesurés sur RDNA 2 (gfx1036, VIctory #605) : `rounding` appliqué à la
+    valeur exacte (rpi = floor(x + 0.5) sans arrondi intermédiaire), saturation, et un NaN donne
+    0x7FFFFFFF ou 0x80000000 selon son bit de signe (au contraire de v_cvt_i32_f32, où NaN → 0)."""
+    x = F(bits)
+    if math.isnan(x):
+        return INT32_MIN if bits >> 31 else INT32_MAX
+    return _to_int(float(rounding(x)) if math.isfinite(x) else x, INT32_MIN, INT32_MAX)
 
 
 def _leading_signs(value):
@@ -321,10 +326,8 @@ VECTOR = {
     "v_mul_hi_u32_u24": lambda a, b, d, k, c: (a & 0xFFFFFF) * (b & 0xFFFFFF) >> 32,
     "v_mul_i32_i24": lambda a, b, d, k, c: signed(a, 24) * signed(b, 24),
     "v_mul_hi_i32_i24": lambda a, b, d, k, c: signed(a, 24) * signed(b, 24) >> 32,
-    "v_cvt_flr_i32_f32": lambda a, b, d, k, c: _to_int(math.floor(F(a)) if math.isfinite(F(a)) else F(a),
-                                                       INT32_MIN, INT32_MAX),
-    "v_cvt_rpi_i32_f32": lambda a, b, d, k, c: _to_int(math.floor(_f32(F(a) + 0.5)) if math.isfinite(F(a))
-                                                       else F(a), INT32_MIN, INT32_MAX),
+    "v_cvt_flr_i32_f32": lambda a, b, d, k, c: _round_to_int(a, math.floor),
+    "v_cvt_rpi_i32_f32": lambda a, b, d, k, c: _round_to_int(a, lambda x: math.floor(x + 0.5)),   # exact en double
     "v_cvt_off_f32_i4": lambda a, b, d, k, c: float_bits(signed(a, 4) / 16),
     "v_rcp_iflag_f32": _unary_float(_reciprocal),
     "v_ffbh_i32": lambda a, b, d, k, c: _leading_signs(a),

@@ -40,9 +40,11 @@ def test_float_to_int_with_rounding_mode(name, value, expected):
     assert lane0(wave, 2) == expected & 0xFFFF_FFFF
 
 
-def test_nan_converts_to_zero():
-    wave = run(*mov(1, 0x7FC0_0000), vop1("v_cvt_flr_i32_f32", 2, V + 1), vop1("v_cvt_rpi_i32_f32", 3, V + 1))
-    assert (lane0(wave, 2), lane0(wave, 3)) == (0, 0)
+def test_nan_follows_its_sign_bit():
+    wave = run(*mov(1, 0x7FC0_0000), *mov(2, 0xFFC0_0000),
+               vop1("v_cvt_flr_i32_f32", 3, V + 1), vop1("v_cvt_rpi_i32_f32", 4, V + 2),
+               vop1("v_cvt_i32_f32", 5, V + 1))
+    assert (lane0(wave, 3), lane0(wave, 4), lane0(wave, 5)) == (0x7FFF_FFFF, 0x8000_0000, 0)
 
 
 @pytest.mark.parametrize("nibble, expected", [(8, -0.5), (7, 0.4375), (0xF, -0.0625), (0x10, 0.0)])
@@ -171,7 +173,47 @@ def test_rounding_conversions_saturate(name):
     wave = run(*(word for i, value in enumerate(SATURATING) for word in (*mov(1 + i, value),)),
                *(vop1(name, 10 + i, V + 1 + i) for i in range(len(SATURATING))))
     assert [lane0(wave, 10 + i) for i in range(len(SATURATING))] == [
-        0x7FFF_FFFF, 0x8000_0000, 0, 0x7FFF_FFFF, 0x8000_0000, 0x7FFF_FFFF]
+        0x7FFF_FFFF, 0x8000_0000, 0x7FFF_FFFF, 0x7FFF_FFFF, 0x8000_0000, 0x7FFF_FFFF]
+
+
+# Mesures sur silicium RDNA 2 (iGPU gfx1036, pilote AMD 32.0.21042.62) publiées par Lyrnc dans
+# VIctory #605 (commentaire 7123302580), identiques dans les quatre FLOAT_MODE : entrée → (rpi, flr, i32).
+HARDWARE = {
+    0x3EFF_FFFF: (0x0000_0000, 0x0000_0000, 0x0000_0000), 0x3F00_0000: (0x0000_0001, 0x0000_0000, 0x0000_0000),
+    0xBF00_0000: (0x0000_0000, 0xFFFF_FFFF, 0x0000_0000), 0xBF00_0001: (0xFFFF_FFFF, 0xFFFF_FFFF, 0x0000_0000),
+    0x4B00_0001: (0x0080_0001, 0x0080_0001, 0x0080_0001), 0x4B00_0003: (0x0080_0003, 0x0080_0003, 0x0080_0003),
+    0x4B7F_FFFF: (0x00FF_FFFF, 0x00FF_FFFF, 0x00FF_FFFF), 0xCB00_0001: (0xFF7F_FFFF, 0xFF7F_FFFF, 0xFF7F_FFFF),
+    0x4F00_0000: (0x7FFF_FFFF, 0x7FFF_FFFF, 0x7FFF_FFFF), 0xCF00_0000: (0x8000_0000, 0x8000_0000, 0x8000_0000),
+    0x7F80_0000: (0x7FFF_FFFF, 0x7FFF_FFFF, 0x7FFF_FFFF), 0xFF80_0000: (0x8000_0000, 0x8000_0000, 0x8000_0000),
+    0x7FC0_0000: (0x7FFF_FFFF, 0x7FFF_FFFF, 0x0000_0000), 0xFFC0_0000: (0x8000_0000, 0x8000_0000, 0x0000_0000),
+    0x7F80_0001: (0x7FFF_FFFF, 0x7FFF_FFFF, 0x0000_0000), 0xFFFF_FFFF: (0x8000_0000, 0x8000_0000, 0x0000_0000),
+}
+CONVERSIONS = ("v_cvt_rpi_i32_f32", "v_cvt_flr_i32_f32", "v_cvt_i32_f32")
+
+
+@pytest.mark.parametrize("encoding", ["VOP1", "VOP3"])
+def test_conversions_match_rdna2_hardware_measurements(encoding):
+    for bits, results in HARDWARE.items():
+        for name, expected in zip(CONVERSIONS, results):
+            convert = vop1(name, 2, V + 1) if encoding == "VOP1" else vop3(name, 2, V + 1)
+            got = lane0(run(*mov(1, bits), *([convert] if encoding == "VOP1" else convert)), 2)
+            assert got == expected, f"{name} {bits:#010x} ({encoding}) : {got:#010x} au lieu de {expected:#010x}"
+
+
+def hardware_program():
+    words, slot = [], 0
+    for bits in HARDWARE:
+        for name in CONVERSIONS:
+            words += [*mov(1, bits), vop1(name, 2, V + 1), *store_lane(2, slot % 64)]
+            words += [*vop3(name, 3, V + 1), *store_lane(3, 64 + slot % 64)]
+            slot += 1
+    return with_lane_offset(*words)
+
+
+@gpu
+def test_conversions_match_hardware_measurements_on_gpu():
+    expected, actual = compare(hardware_program())
+    assert actual == expected
 
 
 def saturating_program():

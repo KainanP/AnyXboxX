@@ -201,7 +201,7 @@ VECTOR = {
     "v_cvt_u32_f32": "SatF32ToU32({a})",
     "v_cvt_i32_f32": "SatF32ToI32({a})",
     "v_cvt_f32_ubyte0": "asuint((float)({a} & 0xFFu))",
-    "v_sat_pk_u8_i16": "(({d} & 0xFFFF0000u) | (uint)clamp((int)(({a}) << 16u) >> 16, 0, 255) "
+    "v_sat_pk_u8_i16": "((uint)clamp((int)(({a}) << 16u) >> 16, 0, 255) "
                        "| ((uint)clamp((int)({a}) >> 16, 0, 255) << 8u))",
     "v_cvt_f32_ubyte1": "asuint((float)(({a} >> 8) & 0xFFu))",
     "v_cvt_f32_ubyte2": "asuint((float)(({a} >> 16) & 0xFFu))",

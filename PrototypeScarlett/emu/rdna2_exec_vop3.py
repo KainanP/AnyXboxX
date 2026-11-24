@@ -188,7 +188,12 @@ def _compare(wave, name, fields, literal):
 
 
 def _carry(wave, name, fields, literal):
-    """VOP3b : retenue dans SDST, bits des lignes inactives à 0 (voir rdna2_exec._carry)."""
+    """VOP3b : retenue dans SDST, bits des lignes inactives à 0.
+
+    Choix documenté, déduit et non cité mot pour mot : la doc RDNA 2 (section 6.2, p. 43) dit que la
+    forme VOP3 écrit la retenue « to an arbitrary SGPR-pair » ; la règle « fully written, no partial
+    mask updates » de la section 3.9 est énoncée pour VCC (voir rdna2_exec._carry). Non mesuré.
+    """
     carries = 0
     for lane in wave.active():
         a, b, c = _inputs(wave, fields, lane, literal, False)

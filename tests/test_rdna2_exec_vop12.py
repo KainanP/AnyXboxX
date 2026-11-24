@@ -118,8 +118,9 @@ def test_vop2_add_with_carry_builds_a_64_bit_sum():
 
 
 def test_carry_out_of_inactive_lanes_is_zero():
-    """Revue de #133 : EXEC = 0b0001, VCC = 0xFFFFFFFE. Les lignes inactives écrivent 0 dans le masque
-    de retenue, comme une comparaison (sources dans rdna2_exec._carry) ; seule la ligne 0 compte."""
+    """Revue de #133 : EXEC = 0b0001, VCC = 0xFFFFFFFE. Fixe un choix documenté, non mesuré : les
+    lignes inactives écrivent 0 dans le masque de retenue (VOP2 : doc RDNA 2 section 3.9, citée dans
+    rdna2_exec._carry ; VOP3 : déduit, voir rdna2_exec_vop3._carry) ; seule la ligne 0 compte."""
     wave = run(
         sop1("s_mov_b32", VCC_LO, LITERAL), 0xFFFF_FFFE, sop1("s_mov_b32", 40, LITERAL), 0xFFFF_FFFE,
         sop1("s_mov_b32", EXEC_LO, const(1)),

@@ -161,7 +161,14 @@ def _vector(wave, name, fields, literal):
 
 
 def _carry(wave, name, fields, literal):
-    """Forme VOP2 de v_add/sub/subrev_co_ci_u32 : retenue lue et écrite dans VCC."""
+    """Forme VOP2 de v_add/sub/subrev_co_ci_u32 : retenue lue et écrite dans VCC.
+
+    Les bits des lignes inactives sont mis à 0, comme pour une comparaison. Sources : spécification
+    lisible par machine d'AMD (RDNA 3, encodage VOPC : « the result of VCC[laneId] is zero » si
+    EXEC[laneId] = 0) et LLVM (SIInstrInfo.cpp, isVCmp : le TODO range la sdst de V_ADD_CO_U32 et
+    V_SUB_CO_U32 parmi les masques qui mettent à 0 les lignes inactives). Aucune source ne dit que
+    ces bits sont conservés ; une mesure sur matériel RDNA 2 trancherait.
+    """
     carries = 0
     for lane in wave.active():
         a, b = wave.read_lane(fields["src0"], lane, literal), wave.v[fields["vsrc1"]][lane]

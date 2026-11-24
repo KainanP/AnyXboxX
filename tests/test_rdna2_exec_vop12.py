@@ -8,7 +8,7 @@ import pytest
 
 from emu import rdna2_exec, rdna2_gpu, rdna2_hlsl
 from emu.rdna2_exec_ops import bits_float, float_bits
-from test_rdna2_exec import VCC_LO, V, const, program, sop1, vop1, vop2, vop3
+from test_rdna2_exec import EXEC_LO, VCC_LO, V, const, program, sop1, vop1, vop2, vop3
 from test_rdna2_hlsl import compare, store_lane, with_lane_offset
 
 LITERAL = 255
@@ -115,6 +115,37 @@ def test_vop2_add_with_carry_builds_a_64_bit_sum():
     assert wave.v[3] == [0xFFFF_FFFF] + list(range(31))
     assert wave.v[4] == [0x10] + [0x11] * 31
     assert wave.vcc == 0
+
+
+def test_carry_out_of_inactive_lanes_is_zero():
+    """Revue de #133 : EXEC = 0b0001, VCC = 0xFFFFFFFE. Les lignes inactives écrivent 0 dans le masque
+    de retenue, comme une comparaison (sources dans rdna2_exec._carry) ; seule la ligne 0 compte."""
+    wave = run(
+        sop1("s_mov_b32", VCC_LO, LITERAL), 0xFFFF_FFFE, sop1("s_mov_b32", 40, LITERAL), 0xFFFF_FFFE,
+        sop1("s_mov_b32", EXEC_LO, const(1)),
+        *mov(1, 1),
+        vop2("v_add_co_ci_u32", 2, LITERAL, 1), 0xFFFF_FFFF,               # 0xFFFFFFFF + 1 + 0 : retenue
+        *vop3("v_add_co_ci_u32", 3, LITERAL, V + 1, 40, sdst=40), 0xFFFF_FFFF)
+    assert wave.vcc == 0x0000_0001
+    assert wave.s[40] == 0x0000_0001
+
+
+def partial_exec_carry_program():
+    return with_lane_offset(
+        sop1("s_mov_b32", VCC_LO, LITERAL), 0xAAAA_AAAA,
+        sop1("s_mov_b32", 40, LITERAL), 0x5555_5555,
+        sop1("s_mov_b32", EXEC_LO, LITERAL), 0x00FF_FF00,
+        vop2("v_add_co_ci_u32", 2, LITERAL, 0), 0xFFFF_FFF0,               # retenue sur les lignes ≥ 16
+        *vop3("v_sub_co_ci_u32", 3, V + 0, LITERAL, 40, sdst=40), 8,
+        sop1("s_mov_b32", EXEC_LO, LITERAL), 0xFFFF_FFFF,
+        vop1("v_mov_b32", 4, VCC_LO), vop1("v_mov_b32", 5, 40),
+        *store_lane(2, 0), *store_lane(3, 1), *store_lane(4, 2), *store_lane(5, 3))
+
+
+@gpu
+def test_carry_masks_with_partial_exec_match_on_gpu():
+    expected, actual = compare(partial_exec_carry_program())
+    assert actual == expected
 
 
 def test_vop2_subtract_with_borrow_writes_vcc():

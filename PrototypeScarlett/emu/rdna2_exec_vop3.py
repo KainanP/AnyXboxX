@@ -188,6 +188,7 @@ def _compare(wave, name, fields, literal):
 
 
 def _carry(wave, name, fields, literal):
+    """VOP3b : retenue dans SDST, bits des lignes inactives à 0 (voir rdna2_exec._carry)."""
     carries = 0
     for lane in wave.active():
         a, b, c = _inputs(wave, fields, lane, literal, False)

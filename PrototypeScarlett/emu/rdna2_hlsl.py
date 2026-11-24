@@ -12,8 +12,8 @@ import struct
 import sys
 
 from emu import (rdna2, rdna2_exec_div, rdna2_exec_wide, rdna2_hlsl_div, rdna2_hlsl_dot, rdna2_hlsl_ext,
-                 rdna2_hlsl_format, rdna2_hlsl_image, rdna2_hlsl_movrel, rdna2_hlsl_pc, rdna2_hlsl_sad,
-                 rdna2_hlsl_scalar64, rdna2_hlsl_wide)
+                 rdna2_hlsl_f16, rdna2_hlsl_format, rdna2_hlsl_image, rdna2_hlsl_movrel, rdna2_hlsl_pc,
+                 rdna2_hlsl_sad, rdna2_hlsl_scalar64, rdna2_hlsl_wide)
 from emu.rdna2_exec_ops import signed
 from emu.rdna2_exec_ops import SIXTEEN_BIT_RESULTS, VECTOR_NO_OPERATION
 from emu.rdna2_exec_vop3 import MAD64, Fields, float_inputs, float_result
@@ -237,6 +237,8 @@ def statements(data, instruction, finish="return;", special=None, active=ACTIVE)
     if family in ("VOP1", "VOP2", "VOPC"):
         fields = _fields(family, first)
         lit = _literal(data, instruction, 1)
+        if name in rdna2_hlsl_f16.TEMPLATES:        # avant is_ext : les formes SDWA/DPP du f16 sont refusées par rdna2_hlsl_f16
+            return rdna2_hlsl_f16.vector(name, fields, lit, active)
         if rdna2_hlsl_ext.is_ext(family, fields.get("src0")):
             return rdna2_hlsl_ext.statements(family, name, fields, lit or 0, active)
         return _vector(name, fields, lit, active)
@@ -273,7 +275,8 @@ def translate(data, sgprs=None, wave_size=32):
         from emu import rdna2_hlsl_wave64
         return rdna2_hlsl_wave64.translate(data, sgprs)
     helpers = "\n".join((ALU_HELPERS, rdna2_hlsl_wide.HELPERS, rdna2_hlsl_div.HELPERS, rdna2_hlsl_image.HELPERS,
-                         rdna2_hlsl_format.HELPERS, rdna2_hlsl_dot.HELPERS, rdna2_hlsl_sad.HELPERS))
+                         rdna2_hlsl_format.HELPERS, rdna2_hlsl_dot.HELPERS, rdna2_hlsl_sad.HELPERS,
+                         rdna2_hlsl_f16.HELPERS))
     prelude = PRELUDE.replace("[numthreads", helpers + "\n[numthreads", 1)
     return "\n".join([prelude.rstrip("\n"), *body(data, sgprs), "}", ""])
 
@@ -376,6 +379,7 @@ def coverage_names():
             | set(rdna2_hlsl_scalar64.SCALAR64)
             | rdna2_hlsl_wide.TRANSLATED | rdna2_hlsl_div.TRANSLATED | rdna2_hlsl_movrel.TRANSLATED
             | rdna2_hlsl_dot.TRANSLATED | rdna2_hlsl_sad.TRANSLATED | rdna2_hlsl_pc.TRANSLATED
+            | set(rdna2_hlsl_f16.TEMPLATES)
             | {"s_endpgm", "v_readlane_b32", "v_writelane_b32", "v_readfirstlane_b32"})
 
 

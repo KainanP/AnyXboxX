@@ -9,7 +9,7 @@ qui les nomme, ce qui mesure ce qui reste à traduire.
 import struct
 
 from emu import rdna2, rdna2_exec_ext, rdna2_exec_graphics, rdna2_exec_image, rdna2_exec_memory, rdna2_exec_vop3
-from emu.rdna2_exec_ops import SCALAR, VECTOR, VECTOR_COMPARE, BRANCHES, float_bits
+from emu.rdna2_exec_ops import SCALAR, VECTOR, VECTOR_COMPARE, VECTOR_NO_OPERATION, BRANCHES, float_bits
 
 LANES = 32
 FULL = (1 << LANES) - 1
@@ -129,6 +129,12 @@ def step(wave, data):
             next_pc = wave.pc + rdna2.DWORD + _signed16(fields["simm16"]) * rdna2.DWORD
     elif name in SCALAR:
         SCALAR[name](wave, fields, literal)
+    elif name in VECTOR_NO_OPERATION:
+        pass
+    elif name in VOP2_CARRY and family == "VOP2":
+        if rdna2_exec_ext.is_ext(family, fields.get("src0")):
+            raise Untranslated(f"instruction non traduite : {name} (SDWA/DPP)")
+        _carry(wave, name, fields, literal)
     elif rdna2_exec_ext.is_ext(family, fields.get("src0")):
         rdna2_exec_ext.execute(wave, family, name, fields, literal or 0)
     elif name in VECTOR:
@@ -154,6 +160,17 @@ def _vector(wave, name, fields, literal):
         destination[lane] = operation(a, b, destination[lane], literal, wave.vcc >> lane & 1) & MASK32
 
 
+def _carry(wave, name, fields, literal):
+    """Forme VOP2 de v_add/sub/subrev_co_ci_u32 : retenue lue et écrite dans VCC."""
+    carries = 0
+    for lane in wave.active():
+        a, b = wave.read_lane(fields["src0"], lane, literal), wave.v[fields["vsrc1"]][lane]
+        result, carry = rdna2_exec_vop3.CARRY[name](a, b, wave.vcc >> lane & 1)
+        wave.v[fields["vdst"]][lane] = result & MASK32
+        carries |= bool(carry) << lane
+    wave.s[VCC_LO] = carries
+
+
 def _compare(wave, name, fields, literal):
     test, writes_exec = VECTOR_COMPARE[name]
     mask = 0
@@ -172,7 +189,9 @@ def run(data, wave=None, max_steps=MAX_STEPS):
     raise RuntimeError(f"programme interrompu après {max_steps} instructions (boucle infinie ?)")
 
 
-EXECUTABLE = frozenset({"s_endpgm", *SCALAR, *VECTOR, *VECTOR_COMPARE, *BRANCHES})
+VOP2_CARRY = frozenset({"v_add_co_ci_u32", "v_sub_co_ci_u32", "v_subrev_co_ci_u32"})
+EXECUTABLE = frozenset({"s_endpgm", *SCALAR, *VECTOR, *VECTOR_COMPARE, *VECTOR_NO_OPERATION, *BRANCHES,
+                        *VOP2_CARRY})
 
 
 def executable(family, name):

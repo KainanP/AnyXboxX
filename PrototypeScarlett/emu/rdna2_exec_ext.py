@@ -19,9 +19,11 @@ def is_ext(family, src0):
 
 def _operand_float_flags(name):
     """Return (src_is_f32, dst_is_f32) from the instruction's operand types."""
-    if name.startswith("v_cvt_"):
+    if name.startswith("v_cvt_"):            # v_cvt_[mode_]<destination>_<source>
         parts = name.split("_")
-        return len(parts) >= 4 and parts[3] == "f32", len(parts) >= 3 and parts[2] == "f32"
+        return parts[-1] == "f32", parts[-2] == "f32"
+    if name == "v_frexp_exp_i32_f32":
+        return True, False
     is_f32 = name.endswith("_f32")
     return is_f32, is_f32
 

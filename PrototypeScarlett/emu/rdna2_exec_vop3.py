@@ -7,13 +7,25 @@ Sémantique d'après la documentation publique d'AMD (« RDNA 2 Instruction Set 
 """
 import math
 
-from emu.rdna2_exec_ops import (MASK32, VECTOR, VECTOR_COMPARE, _float_op, _fma, bits_float, float_bits,
-                                ldexp, signed)
+from emu.rdna2_exec_ops import (MASK32, VECTOR, VECTOR_COMPARE, _float_op, _fma, _legacy_fma, bits_float,
+                                float_bits, ldexp, signed)
 
 SIGN = 0x8000_0000
 EXEC_LO = 126
 OUTPUT_SCALE = {1: 2.0, 2: 4.0, 3: 0.5}
 COMPARE_END, VOP2_START, VOP2_END, VOP1_START, VOP1_END = 0x100, 0x100, 0x140, 0x180, 0x200
+FLOAT_TO_INT = frozenset({"v_cvt_u32_f32", "v_cvt_i32_f32", "v_cvt_flr_i32_f32", "v_cvt_rpi_i32_f32",
+                          "v_frexp_exp_i32_f32"})
+
+
+def float_result(name):
+    """Résultat flottant 32 bits : clamp et omod s'appliquent."""
+    return "_f32" in name and name not in FLOAT_TO_INT and not name.startswith(("v_cvt_u32", "v_cvt_i32"))
+
+
+def float_inputs(name):
+    """Sources flottantes : abs et neg s'appliquent."""
+    return float_result(name) or name.startswith("v_cvt_") or name in FLOAT_TO_INT
 
 
 def _median(a, b, c):
@@ -23,10 +35,6 @@ def _median(a, b, c):
 def _float3(function):
     operation = _float_op(function)
     return lambda a, b, c: operation(bits_float(a), bits_float(b), bits_float(c))
-
-
-def _legacy_fma(x, y, z):
-    return z if x == 0 or y == 0 else x * y + z          # « legacy » : 0 × n'importe quoi = 0
 
 
 def _bitfield(value, offset, width, is_signed=False):
@@ -154,10 +162,10 @@ def execute(wave, name, opcode, word, literal):
         return _carry(wave, name, fields, literal)
     is_vop1 = VOP1_START <= opcode < VOP1_END
     is_vop2 = VOP2_START <= opcode < VOP2_END
-    is_float = "_f32" in name and not name.startswith(("v_cvt_u32", "v_cvt_i32"))
+    is_float = float_result(name)
     destination = wave.v[fields.vdst]
     for lane in wave.active():
-        a, b, c = _inputs(wave, fields, lane, literal, is_float or name.startswith("v_cvt_"))
+        a, b, c = _inputs(wave, fields, lane, literal, float_inputs(name))
         if is_vop1 or is_vop2:
             condition = c >> lane & 1 if name == "v_cndmask_b32" else 0
             result = VECTOR[name](a, b if is_vop2 else 0, destination[lane], literal, condition)

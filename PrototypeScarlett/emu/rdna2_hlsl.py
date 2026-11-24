@@ -13,7 +13,8 @@ import sys
 
 from emu import rdna2, rdna2_hlsl_ext, rdna2_hlsl_image
 from emu.rdna2_exec_ops import signed
-from emu.rdna2_exec_vop3 import Fields
+from emu.rdna2_exec_ops import VECTOR_NO_OPERATION
+from emu.rdna2_exec_vop3 import Fields, float_inputs, float_result
 from emu.rdna2_hlsl_memory import memory_statements
 from emu.rdna2_hlsl_ops import (BRANCHES, HELPERS as ALU_HELPERS, SCALAR, VECTOR, Untranslatable,
                                 compare_condition, hexa, is_compare, scalar_statement, scalar_target,
@@ -100,6 +101,10 @@ def _vector(name, fields, literal):
               "d": f"v[{fields.get('vdst', 0)}]", "k": hexa(literal or 0)}
     if name == "v_readfirstlane_b32":
         return [f"s[{fields['vdst']}] = ReadLane(lane, {a}, firstbitlow(s[126]));"]
+    if name in VECTOR_NO_OPERATION:
+        return []
+    if name in CARRY:                       # forme VOP2 : retenue lue et écrite dans VCC
+        return _carry(name, a, values["b"], "s[106]", fields["vdst"], "s[106]")
     if is_compare(name):
         target = "s[126]" if name.startswith("v_cmpx") else "s[106]"
         condition = compare_condition(name, a, values["b"])
@@ -107,6 +112,13 @@ def _vector(name, fields, literal):
     if name not in VECTOR:
         raise Untranslatable(f"non traduite en HLSL : {name}")
     return [f"if ({ACTIVE}) v[{fields['vdst']}] = {VECTOR[name].format(**values)};"]
+
+
+def _carry(name, a, b, carry_in, vdst, carry_out):
+    result, carry = CARRY[name]
+    return [f"{{ uint x = {a}, y = {b}, k = ({carry_in} >> lane) & 1u, r = 0u; bool o = false; "
+            f"if ({ACTIVE}) {{ r = {result}; o = {carry}; v[{vdst}] = r; }} "
+            f"{carry_out} = Ballot(lane, o); }}"]
 
 
 def _modified(code, index, fields, literal, is_float):
@@ -119,16 +131,13 @@ def _modified(code, index, fields, literal, is_float):
 
 
 def _vop3(name, opcode, fields, literal):
-    is_float = "_f32" in name and not name.startswith(("v_cvt_u32", "v_cvt_i32"))
-    a, b, c = (_modified(code, i, fields, literal, is_float) for i, code in enumerate(fields.sources))
+    is_float = float_result(name)
+    a, b, c = (_modified(code, i, fields, literal, float_inputs(name)) for i, code in enumerate(fields.sources))
     if opcode < 0x100 and is_compare(name):
         target = "s[126]" if name.startswith("v_cmpx") else scalar_target(fields.vdst)
         return [f"{{ bool t = ({ACTIVE}) && ({compare_condition(name, a, b)}); {target} = Ballot(lane, t); }}"]
     if name in CARRY:
-        result, carry = CARRY[name]
-        return [f"{{ uint x = {a}, y = {b}, k = ({c} >> lane) & 1u, r = 0u; bool o = false; "
-                f"if ({ACTIVE}) {{ r = {result}; o = {carry}; v[{fields.vdst}] = r; }} "
-                f"{scalar_target(fields.sdst)} = Ballot(lane, o); }}"]
+        return _carry(name, a, b, c, fields.vdst, scalar_target(fields.sdst))
     if name == "v_readlane_b32":
         return [f"{scalar_target(fields.vdst)} = ReadLane(lane, {a}, {b});"]
     if name == "v_writelane_b32":
@@ -284,7 +293,7 @@ def body(data, sgprs=None, finish="return;", special=None):
 
 def coverage_names():
     """Mnémoniques que le recompilateur sait traduire (hors mémoire, comptée à part)."""
-    return set(SCALAR) | set(VECTOR) | set(BRANCHES) | set(CARRY) | {"s_endpgm", "v_readlane_b32",
+    return set(SCALAR) | set(VECTOR) | set(BRANCHES) | set(CARRY) | VECTOR_NO_OPERATION | {"s_endpgm", "v_readlane_b32",
                                                                       "v_writelane_b32", "v_readfirstlane_b32"}
 
 

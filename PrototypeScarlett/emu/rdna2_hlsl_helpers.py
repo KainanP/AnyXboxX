@@ -117,6 +117,30 @@ uint AlignBit(uint hi, uint lo, uint s) {
 uint SadU32(uint a, uint b, uint c) {
   return (a > b ? (a - b) : (b - a)) + c;
 }
+// Opérations f32 dans des fonctions `precise` (dxc ne replie plus x + 0, x - x ni 0 × x). Le pilote AMD
+// (RX 9070 XT) replie pourtant fadd x, 0.0 et fsub x, x, et Intel fsub 0.0, x : le signe d'un résultat
+// exactement nul et x - x sont donc fixés en entier.
+uint F32Add(uint a, uint b) {
+  precise float r = asfloat(a) + asfloat(b);
+  return (asuint(r) & 0x7FFFFFFFu) == 0u ? a & b & 0x80000000u : asuint(r);    // -0 seulement pour -0 + -0
+}
+uint F32Sub(uint a, uint b) {
+  if (a == b)                                     // NaN : lui-même, rendu silencieux ; ±infini : NaN par défaut
+    return (a & 0x7FFFFFFFu) > 0x7F800000u ? a | 0x400000u : (a & 0x7F800000u) == 0x7F800000u ? 0xFFC00000u : 0u;
+  precise float r = asfloat(a) - asfloat(b);
+  return (asuint(r) & 0x7FFFFFFFu) == 0u ? a & ~b & 0x80000000u : asuint(r);
+}
+uint F32Mul(uint a, uint b) {
+  precise float r = asfloat(a) * asfloat(b);
+  return asuint(r);
+}
+// v_mac_f32 et v_mad_f32 ; les FMA à arrondi unique (v_fma_f32, v_fmac_f32...) passent par FmaF32 (emu/rdna2_hlsl_fma.py).
+uint F32Mad(uint a, uint b, uint c) {
+  precise float r = mad(asfloat(a), asfloat(b), asfloat(c));
+  bool zeros = ((a & 0x7FFFFFFFu) == 0u || (b & 0x7FFFFFFFu) == 0u) && (a & 0x7F800000u) != 0x7F800000u
+               && (b & 0x7F800000u) != 0x7F800000u && (c & 0x7FFFFFFFu) == 0u;
+  return zeros ? (a ^ b) & c & 0x80000000u : asuint(r);   // produit nul + 0 : signe de la somme exacte
+}
 uint MulLegacyF32(uint a, uint b) {
   float x = asfloat(a), y = asfloat(b);
   return (x == 0.0f || y == 0.0f) ? 0u : asuint(x * y);

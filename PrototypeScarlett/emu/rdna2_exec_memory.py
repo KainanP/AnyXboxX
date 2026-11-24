@@ -9,7 +9,7 @@ publique d'AMD (« RDNA 2 Instruction Set Architecture »).
 import re
 import struct
 
-from emu import rdna2_exec_atomic, rdna2_exec_lanes
+from emu import rdna2_exec_atomic, rdna2_exec_lanes, rdna2_exec_smem
 from emu.rdna2_exec_ops import MASK32, signed
 
 PAGE = 4096
@@ -84,7 +84,7 @@ def supports(name):
                 or VECTOR_ATOMIC.match(name) or SCALAR_PATTERN.match(name)
                 or LDS_PATTERN.match(name) or LDS_ATOMIC.match(name) or name in LDS_HALVES
                 or rdna2_exec_atomic.vector(name) or rdna2_exec_atomic.lds(name)
-                or rdna2_exec_atomic.lds_exchange2(name))
+                or rdna2_exec_atomic.lds_exchange2(name) or rdna2_exec_smem.supports(name))
 
 
 def _to_words(data):
@@ -114,7 +114,9 @@ def execute(wave, family, name, word):
     """Exécute une instruction mémoire dont `supports(name)` est vrai ; `word` : 64 bits."""
     if name in CACHE_CONTROL:
         return
-    if family == "SMEM":
+    if family == "SMEM" and rdna2_exec_smem.supports(name):
+        rdna2_exec_smem.execute(wave, name, word)
+    elif family == "SMEM":
         _scalar(wave, name, word)
     elif family == "DS":
         _lds(wave, name, word)

@@ -5,7 +5,7 @@ sont utilisées. La LDS est `g_lds` (groupshared). Sur RDNA 2 un wave avance en 
 écriture est visible de toutes ses lignes à l'instruction suivante. En HLSL, les 32 threads
 ne sont pas synchrones, d'où une barrière de groupe après chaque écriture.
 """
-from emu import rdna2_exec_lanes, rdna2_swizzle as swz
+from emu import rdna2_exec_lanes, rdna2_exec_smem, rdna2_hlsl_smem, rdna2_swizzle as swz
 from emu.rdna2_exec_atomic import STRIDE64
 from emu.rdna2_exec_memory import LDS_ATOMIC, LDS_PATTERN, SCALAR_PATTERN, VECTOR_ATOMIC, VECTOR_PATTERN, WIDTHS
 from emu.rdna2_exec_ops import signed
@@ -159,6 +159,8 @@ def memory_statements(family, name, word, active):
     """Instructions HLSL d'une instruction mémoire RDNA 2 (`word` : 64 bits)."""
     if name in ("s_dcache_inv", "s_gl1_inv", "s_dcache_wb", "buffer_gl0_inv", "buffer_gl1_inv", "ds_nop"):
         return []
+    if family == "SMEM" and rdna2_exec_smem.supports(name):
+        return rdna2_hlsl_smem.statements(name, word)
     if family == "SMEM" and SCALAR_PATTERN.match(name):
         return _scalar(name, word)
     if family == "DS" and (LDS_PATTERN.match(name) or LDS_ATOMIC.match(name) or name in rdna2_exec_lanes.NAMES):

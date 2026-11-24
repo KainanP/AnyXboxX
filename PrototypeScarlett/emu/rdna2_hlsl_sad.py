@@ -13,7 +13,8 @@ VGPR_FIRST = 256
 HELPERS = """uint MsadU8(uint a, uint b) {
   // v_msad_u8 : octets où la référence b vaut 0 exclus de la somme.
   uint r = 0u;
-  [unroll] for (uint i = 0u; i < 32u; i += 8u) {
+  // [loop] et non [unroll] : déroulée, cette boucle est mal compilée par le pilote AMD RDNA 2 (#151).
+  [loop] for (uint i = 0u; i < 32u; i += 8u) {
     uint x = (a >> i) & 0xFFu, y = (b >> i) & 0xFFu;
     if (y != 0u) r += x > y ? x - y : y - x;
   }

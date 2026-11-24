@@ -128,3 +128,58 @@ def execute(wave, name, fields, literal):
         old = destination[lane]
         result = operation(a, b, 0, old & 0xFFFF, k)
         destination[lane] = result if name in WORD_RESULT else (old & 0xFFFF_0000) | result
+
+
+def _check_vop3(name, kinds, fields, literal):
+    """Formes VOP3 dont le comportement n'est pas sourcé : refusées avant de toucher une ligne."""
+    if name in WORD_RESULT and (fields.clamp or fields.omod):
+        _refuse(f"{name} : clamp ou omod sur un résultat f32 non pris en charge")
+    if fields.omod:
+        _refuse(f"{name} : omod sur un résultat f16 non pris en charge")
+    if fields.op_sel and name == "v_fmac_f16":
+        _refuse(f"{name} : op_sel non pris en charge en VOP3")
+    if fields.op_sel >> 3 & 1 and name in WORD_RESULT:
+        _refuse(f"{name} : op_sel sur une destination de 32 bits non pris en charge")
+    if name in ("v_fmamk_f16", "v_fmaak_f16") and literal is None:
+        _refuse(f"{name} (VOP3) : sans littéral, la constante K n'existe pas")
+    for index, kind in enumerate(kinds):
+        if kind == "w" and fields.op_sel >> index & 1:
+            _refuse(f"{name} : op_sel sur une source de 32 bits non pris en charge")
+        if kind == "i" and (fields.abs | fields.neg) >> index & 1:
+            _refuse(f"{name} : abs/neg sur une source entière non pris en charge")
+
+
+def _modified(value, kind, fields, index):
+    """abs et neg de VOP3 : bit de signe de la moitié f16 (bit 15) ou du mot f32 (bit 31)."""
+    if kind == "i":
+        return value
+    sign = 0x8000_0000 if kind == "w" else 0x8000
+    if fields.abs >> index & 1:
+        value &= ~sign
+    if fields.neg >> index & 1:
+        value ^= sign
+    return value
+
+
+def execute_vop3(wave, name, fields, literal):
+    """VOP3 f16 : op_sel (bits 0 à 2) lit la moitié haute d'une source, op_sel bit 3 écrit le résultat dans la
+    moitié haute de vdst et garde la basse ; clamp borne le résultat f16 à [0, 1]."""
+    kinds, operation = OPERATIONS[name]
+    _check_vop3(name, kinds, fields, literal)
+    high = fields.op_sel >> 3 & 1
+    destination = wave.v[fields.vdst]
+    k = (literal or 0) & 0xFFFF
+    for lane in wave.active():
+        values = [_modified(_source(wave, name, kind, code, lane, literal, fields.op_sel >> index & 1), kind, fields, index)
+                  for index, (kind, code) in enumerate(zip(kinds, fields.sources))]
+        a, b, c = (values + [0, 0])[:3]
+        old = destination[lane]
+        result = operation(a, b, c, old & 0xFFFF, k)
+        if fields.clamp:
+            result = half_clamp(result)
+        if name in WORD_RESULT:
+            destination[lane] = result
+        elif high:
+            destination[lane] = (old & 0xFFFF) | result << 16
+        else:
+            destination[lane] = (old & 0xFFFF_0000) | result

@@ -6,7 +6,7 @@ import pytest
 
 from emu import rdna2_exec, rdna2_exec_f16 as f16
 from emu.rdna2_exec_ops import float_bits
-from test_rdna2_exec import EXEC_LO, LITERAL, ONE, V, const, program, sop1, vop1, vop2
+from test_rdna2_exec import EXEC_LO, LITERAL, ONE, V, const, program, sop1, vop1, vop2, vop3
 
 OLD = 0x1234_5678               # destination avant l'instruction : sa moitié haute doit rester
 
@@ -137,3 +137,53 @@ def test_vop1_and_vop2_f16_encodings_are_executable():
              "v_max_f16", "v_min_f16", "v_ldexp_f16"]
     assert all(rdna2_exec.executable("VOP2", name) for name in names)
     assert rdna2_exec.executable("VOP1", "v_cvt_f16_f32") and rdna2_exec.executable("VOP1", "v_cvt_f32_f16")
+
+
+def test_op_sel_reads_and_writes_high_halves():
+    wave = execute(*vop3("v_add_f16", 3, V + 1, V + 2, op_sel=0b1001), v={1: 0x4000_3C00, 2: 0x3C00, 3: OLD})
+    assert wave.v[3][0] == 0x4200_5678                                   # 2.0 (haut) + 1.0, écrit en haut
+    assert execute(*vop3("v_ldexp_f16", 3, V + 1, V + 2, op_sel=0b0010),
+                   v={1: 0x3C00, 2: 0x0002_0000, 3: OLD}).v[3][0] == 0x1234_4400
+    assert execute(*vop3("v_cvt_f32_f16", 3, V + 1, op_sel=0b0001), v={1: 0x3C00_0000, 3: OLD}).v[3][0] == 0x3F80_0000
+    assert execute(*vop3("v_cvt_f16_f32", 3, V + 1, neg=0b001, op_sel=0b1000),
+                   v={1: 0x3F80_0000, 3: OLD}).v[3][0] == 0xBC00_5678
+
+
+def test_abs_neg_and_clamp_act_on_the_half():
+    seeds = {1: 0x0000_3C00, 2: 0x0000_C000, 3: OLD}
+    assert execute(*vop3("v_add_f16", 3, V + 1, V + 2, neg=0b01, abs_=0b10), v=seeds).v[3][0] == 0x1234_3C00
+    assert execute(*vop3("v_add_f16", 3, V + 1, V + 1, clamp=1), v=seeds).v[3][0] == 0x1234_3C00        # 2 → 1
+    assert execute(*vop3("v_add_f16", 3, V + 1, V + 2, clamp=1), v=seeds).v[3][0] == 0x1234_0000        # -1 → 0
+    assert execute(*vop3("v_add_f16", 3, V + 1, V + 2, clamp=1), v={1: 0x7C00, 2: 0xFC00, 3: OLD}).v[3][0] == 0x1234_0000
+
+
+def test_vop3_fma_literal_and_vop2_forms():
+    assert execute(*vop3("v_fma_f16", 3, V + 1, V + 2, V + 4),
+                   v={1: 0x101F, 2: 0x3BC4, 4: 0x3C00, 3: OLD}).v[3][0] == 0x1234_3C01
+    assert execute(*vop3("v_add_f16", 3, V + 1, LITERAL), 0x1234_3800, v={1: 0x3800, 3: OLD}).v[3][0] == 0x1234_3C00
+    assert execute(*vop3("v_fmamk_f16", 3, LITERAL, V + 2), 0x0000_4000, v={2: 0x3C00, 3: OLD}).v[3][0] == 0x1234_4500
+
+
+REFUSED_VOP3 = [
+    (vop3("v_add_f16", 3, V + 1, V + 2, omod=1), "v_add_f16.*omod"),
+    (vop3("v_add_f16", 3, ONE, V + 2, op_sel=0b0001), "v_add_f16.*op_sel"),
+    (vop3("v_fmac_f16", 3, V + 1, V + 2, op_sel=0b1000), "v_fmac_f16.*op_sel"),
+    (vop3("v_cvt_f16_f32", 3, V + 1, op_sel=0b0001), "v_cvt_f16_f32.*op_sel"),
+    (vop3("v_cvt_f32_f16", 3, V + 1, op_sel=0b1000), "v_cvt_f32_f16.*op_sel"),
+    (vop3("v_cvt_f32_f16", 3, V + 1, clamp=1), "v_cvt_f32_f16.*clamp"),
+    (vop3("v_ldexp_f16", 3, V + 1, V + 2, neg=0b010), "v_ldexp_f16.*neg"),
+    (vop3("v_ldexp_f16", 3, V + 1, ONE), "v_ldexp_f16.*constante flottante"),
+    (vop3("v_fmaak_f16", 3, V + 1, V + 2), "v_fmaak_f16.*littéral"),
+]
+
+
+@pytest.mark.parametrize("words, pattern", REFUSED_VOP3)
+def test_unsourced_vop3_forms_are_refused(words, pattern):
+    with pytest.raises(rdna2_exec.Untranslated, match=pattern):
+        execute(*words)
+
+
+def test_vop3_f16_encodings_are_executable():
+    names = ["v_add_f16", "v_sub_f16", "v_subrev_f16", "v_mul_f16", "v_fmac_f16", "v_fmamk_f16", "v_fmaak_f16",
+             "v_max_f16", "v_min_f16", "v_ldexp_f16", "v_cvt_f16_f32", "v_cvt_f32_f16", "v_fma_f16"]
+    assert all(rdna2_exec.executable("VOP3", name) for name in names)

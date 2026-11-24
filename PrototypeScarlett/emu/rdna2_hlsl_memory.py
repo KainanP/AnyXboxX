@@ -5,6 +5,7 @@ sont utilisées. La LDS est `g_lds` (groupshared). Sur RDNA 2 un wave avance en 
 écriture est visible de toutes ses lignes à l'instruction suivante. En HLSL, les 32 threads
 ne sont pas synchrones, d'où une barrière de groupe après chaque écriture.
 """
+from emu import rdna2_exec_lanes, rdna2_swizzle as swz
 from emu.rdna2_exec_atomic import STRIDE64
 from emu.rdna2_exec_memory import LDS_ATOMIC, LDS_PATTERN, SCALAR_PATTERN, VECTOR_ATOMIC, VECTOR_PATTERN, WIDTHS
 from emu.rdna2_exec_ops import signed
@@ -95,9 +96,8 @@ def _lds(name, word, active):
     offset0, offset1 = word & 0xFF, (word >> 8) & 0xFF
     addr, data0, data1, vdst = ((word >> shift) & 0xFF for shift in (32, 40, 48, 56))
     combined = offset1 << 8 | offset0
-    if name == "ds_bpermute_b32":
-        return [f"{{ uint value = ReadLane(lane, v[{data0}], (v[{addr}] + {combined}u) >> 2); "
-                f"if ({active}) v[{vdst}] = value; }}"]
+    if name in rdna2_exec_lanes.NAMES:
+        return _lanes(name, addr, data0, vdst, combined, active)
     atomic = LDS_ATOMIC.match(name)
     if atomic:
         operation = atomic.group(1)
@@ -130,13 +130,38 @@ def _lds(name, word, active):
     return [statement, LDS_BARRIER] if found.group(1) == "write" else [LDS_BARRIER, statement]
 
 
+def _lanes(name, addr, data0, vdst, offset, active):
+    """ds_swizzle/permute/bpermute : une ligne source inactive donne 0 (emu/rdna2_exec_lanes.py)."""
+    data = f"(({active}) ? v[{data0}] : 0u)"
+    target = f"(v[{addr}] + {offset}u) >> 2"
+    if name == "ds_permute_b32":
+        value = f"ForwardLane(lane, {active}, v[{data0}], {target})"
+    elif name == "ds_bpermute_b32":
+        value = f"ReadLane(lane, {data}, {target})"
+    else:
+        try:
+            rdna2_exec_lanes.swizzle_source(offset, 0)
+        except NotImplementedError as error:
+            raise Untranslatable(f"non traduite en HLSL : {error}") from error
+        value = f"ReadLane(lane, {data}, {_swizzle_source(offset)})"
+    return [f"{{ uint value = {value}; if ({active}) v[{vdst}] = value; }}"]
+
+
+def _swizzle_source(offset):
+    """Expression HLSL de la ligne lue par ds_swizzle_b32 (QUAD_PERM ou BITMASK_PERM)."""
+    if offset & swz.QUAD_PERM_ENC_MASK == swz.QUAD_PERM_ENC:
+        return f"((lane & ~3u) + ((0x{offset & 0xFF:X}u >> ((lane & 3u) * 2u)) & 3u))"
+    and_mask, or_mask, xor_mask = (offset >> shift & swz.BITMASK_MASK for shift in (0, 5, 10))
+    return f"(((lane & {and_mask}u) | {or_mask}u) ^ {xor_mask}u)"
+
+
 def memory_statements(family, name, word, active):
     """Instructions HLSL d'une instruction mémoire RDNA 2 (`word` : 64 bits)."""
     if name in ("s_dcache_inv", "s_gl1_inv", "s_dcache_wb", "buffer_gl0_inv", "buffer_gl1_inv", "ds_nop"):
         return []
     if family == "SMEM" and SCALAR_PATTERN.match(name):
         return _scalar(name, word)
-    if family == "DS" and (LDS_PATTERN.match(name) or LDS_ATOMIC.match(name) or name == "ds_bpermute_b32"):
+    if family == "DS" and (LDS_PATTERN.match(name) or LDS_ATOMIC.match(name) or name in rdna2_exec_lanes.NAMES):
         return _lds(name, word, active)
     if family == "MUBUF" and (VECTOR_PATTERN.match(name) or VECTOR_ATOMIC.match(name)):
         return _buffer(name, word, active)

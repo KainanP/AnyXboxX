@@ -9,7 +9,7 @@ publique d'AMD (« RDNA 2 Instruction Set Architecture »).
 import re
 import struct
 
-from emu import rdna2_exec_atomic
+from emu import rdna2_exec_atomic, rdna2_exec_lanes
 from emu.rdna2_exec_ops import MASK32, signed
 
 PAGE = 4096
@@ -45,7 +45,7 @@ LDS_HALVES = {
 HALF_BITS, HALF_MASK = 16, 0xFFFF
 CACHE_CONTROL = frozenset({"s_dcache_inv", "s_gl1_inv", "s_dcache_wb", "buffer_gl0_inv", "buffer_gl1_inv",
                            "ds_nop"})
-OTHER = frozenset({"s_memtime", "s_memrealtime", "ds_bpermute_b32"})
+OTHER = frozenset({"s_memtime", "s_memrealtime", *rdna2_exec_lanes.NAMES})
 
 
 class Memory:
@@ -160,10 +160,8 @@ def _scalar(wave, name, word):
 def _lds(wave, name, word):
     offset0, offset1 = word & 0xFF, (word >> 8) & 0xFF
     addr, data0, data1, vdst = ((word >> shift) & 0xFF for shift in (32, 40, 48, 56))
-    if name == "ds_bpermute_b32":
-        values = list(wave.v[data0])
-        for lane in wave.active():
-            wave.v[vdst][lane] = values[((wave.v[addr][lane] + (offset1 << 8 | offset0)) // DWORD) % 32]
+    if name in rdna2_exec_lanes.NAMES:
+        rdna2_exec_lanes.execute(wave, name, addr, data0, vdst, offset1 << 8 | offset0)
         return
     atomic = LDS_ATOMIC.match(name)
     found = LDS_PATTERN.match(name)

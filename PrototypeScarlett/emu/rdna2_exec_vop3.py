@@ -8,8 +8,8 @@ Sémantique d'après la documentation publique d'AMD (« RDNA 2 Instruction Set 
 import math
 
 from emu import rdna2_exec_cmp64
-from emu.rdna2_exec_ops import (MASK32, VECTOR, VECTOR_COMPARE, _float_op, _fma, _legacy_fma, bits_float,
-                                float_bits, ldexp, signed)
+from emu.rdna2_exec_ops import (MASK32, VECTOR, VECTOR_COMPARE, VECTOR_NO_OPERATION, _float_op, _fma,
+                                _legacy_fma, bits_float, float_bits, ldexp, signed)
 
 SIGN = 0x8000_0000
 EXEC_LO = 126
@@ -68,6 +68,29 @@ def _perm_b32(src0, src1, src2):
     return out
 
 
+def _bytes(value):
+    return [(value >> shift) & 0xFF for shift in (0, 8, 16, 24)]
+
+
+def _sad_u8(a, b):
+    """Somme des écarts absolus des quatre octets."""
+    return sum(abs(x - y) for x, y in zip(_bytes(a), _bytes(b)))
+
+
+def _lerp_u8(a, b, c):
+    """Moyenne arrondie octet par octet : (a + b + bit d'arrondi de c) >> 1, bit 0 de chaque octet de c."""
+    return sum(((x + y + (z & 1)) >> 1) << (8 * i) for i, (x, y, z) in enumerate(zip(_bytes(a), _bytes(b), _bytes(c))))
+
+
+def _cube(x, y, z):
+    """(face, sc, tc, 2 × axe majeur) d'une direction, comme les v_cube* (repli de LLVM, AMDGPU)."""
+    if abs(z) >= abs(x) and abs(z) >= abs(y):
+        return (5.0 if z < 0 else 4.0), (-x if z < 0 else x), -y, 2.0 * z
+    if abs(y) >= abs(x):
+        return (3.0 if y < 0 else 2.0), x, (-z if y < 0 else z), 2.0 * y
+    return (1.0 if x < 0 else 0.0), (z if x < 0 else -z), -y, 2.0 * x
+
+
 # Instructions propres à VOP3 : fonction(a, b, c) des trois sources.
 VECTOR3 = {
     "v_fma_f32": _float3(_fma),
@@ -103,7 +126,18 @@ VECTOR3 = {
     "v_bfm_b32": lambda a, b, c: ((1 << (a & 31)) - 1) << (b & 31),
     "v_ldexp_f32": lambda a, b, c: _float_op(lambda x: ldexp(x, signed(b)))(bits_float(a)),
     "v_perm_b32": _perm_b32,
+    "v_mul_lo_i32": lambda a, b, c: a * b,
+    "v_sad_u8": lambda a, b, c: _sad_u8(a, b) + c,
+    "v_sad_hi_u8": lambda a, b, c: (_sad_u8(a, b) << 16) + c,
+    "v_lerp_u8": _lerp_u8,
+    "v_cubeid_f32": _float3(lambda x, y, z: _cube(x, y, z)[0]),
+    "v_cubesc_f32": _float3(lambda x, y, z: _cube(x, y, z)[1]),
+    "v_cubetc_f32": _float3(lambda x, y, z: _cube(x, y, z)[2]),
+    "v_cubema_f32": _float3(lambda x, y, z: _cube(x, y, z)[3]),
 }
+# S0 × S1 (32 bits) + S2 (64 bits) → D sur deux VGPR ; retenue (bit 64) dans SDST pour u64.
+MAD64 = frozenset({"v_mad_u64_u32", "v_mad_i64_i32"})
+NULL_SGPR = 125
 # Retenues (VOP3b) : fonction(a, b, retenue entrante) → (résultat, retenue sortante).
 CARRY = {
     "v_add_co_u32": lambda a, b, k: (a + b, (a + b) >> 32 != 0),
@@ -113,9 +147,10 @@ CARRY = {
     "v_sub_co_ci_u32": lambda a, b, k: (a - b - k, a < b + k),
     "v_subrev_co_ci_u32": lambda a, b, k: (b - a - k, b < a + k),
 }
-LANE_OPERATIONS = frozenset({"v_readlane_b32", "v_writelane_b32", "v_mbcnt_lo_u32_b32", "v_mbcnt_hi_u32_b32"})
+LANE_OPERATIONS = frozenset({"v_readlane_b32", "v_writelane_b32", "v_mbcnt_lo_u32_b32", "v_mbcnt_hi_u32_b32",
+                             "v_readfirstlane_b32"})
 EXECUTABLE = frozenset(set(VECTOR) - {"v_readfirstlane_b32"} | set(VECTOR_COMPARE) | set(VECTOR3) | set(CARRY)
-                       | LANE_OPERATIONS | set(rdna2_exec_cmp64.COMPARE64))
+                       | LANE_OPERATIONS | set(rdna2_exec_cmp64.COMPARE64) | MAD64 | VECTOR_NO_OPERATION)
 
 
 class Fields:
@@ -155,8 +190,12 @@ def _output(fields, value, is_float):
 def execute(wave, name, opcode, word, literal):
     """Exécute une instruction VOP3 dont le nom est dans EXECUTABLE."""
     fields = Fields(word)
+    if name in VECTOR_NO_OPERATION:
+        return None
     if name in LANE_OPERATIONS:
         return _lane_operation(wave, name, fields, literal)
+    if name in MAD64:
+        return _mad64(wave, name, fields, literal)
     if name in rdna2_exec_cmp64.COMPARE64:
         return rdna2_exec_cmp64.execute(wave, name, fields.sources, literal, fields.vdst, fields.abs, fields.neg)
     if opcode < COMPARE_END:
@@ -207,9 +246,31 @@ def _carry(wave, name, fields, literal):
     wave.write_scalar(fields.sdst, carries)
 
 
+def _mad64(wave, name, fields, literal):
+    is_signed = name == "v_mad_i64_i32"
+    if is_signed and fields.sdst != NULL_SGPR:
+        from emu.rdna2_exec import Untranslated
+        raise Untranslated("v_mad_i64_i32 : retenue signée dans SDST non vérifiée")
+    carries = 0
+    for lane in wave.active():
+        a, b = (wave.read_lane(code, lane, literal) for code in fields.sources[:2])
+        c = rdna2_exec_cmp64.read64(wave, fields.sources[2], lane, False)
+        if is_signed:
+            total = signed(a) * signed(b) + signed(c, 64)
+        else:
+            total = a * b + c
+        wave.v[fields.vdst][lane] = total & MASK32
+        wave.v[fields.vdst + 1][lane] = total >> 32 & MASK32
+        carries |= (not is_signed and total >> 64 != 0) << lane
+    wave.write_scalar(fields.sdst, carries)
+
+
 def _lane_operation(wave, name, fields, literal):
     src0, src1, _ = fields.sources
-    if name == "v_readlane_b32":
+    if name == "v_readfirstlane_b32":
+        lanes = wave.active() or [0]
+        wave.write_scalar(fields.vdst, wave.read_lane(src0, lanes[0], literal))
+    elif name == "v_readlane_b32":
         lane = wave.read_scalar(src1, literal) & 31
         wave.write_scalar(fields.vdst, wave.read_lane(src0, lane, literal))
     elif name == "v_writelane_b32":

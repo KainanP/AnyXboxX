@@ -14,11 +14,11 @@ import sys
 from emu import rdna2, rdna2_hlsl_ext, rdna2_hlsl_image
 from emu.rdna2_exec_ops import signed
 from emu.rdna2_exec_ops import VECTOR_NO_OPERATION
-from emu.rdna2_exec_vop3 import Fields, float_inputs, float_result
+from emu.rdna2_exec_vop3 import MAD64, Fields, float_inputs, float_result
 from emu.rdna2_hlsl_memory import memory_statements
-from emu.rdna2_hlsl_ops import (BRANCHES, HELPERS as ALU_HELPERS, SCALAR, VECTOR, Untranslatable,
+from emu.rdna2_hlsl_ops import (BRANCHES, HELPERS as ALU_HELPERS, SCALAR, VECTOR, Untranslatable, source_high,
                                 compare_condition, hexa, is_compare, scalar_statement, scalar_target,
-                                source)
+                                source, NULL)
 from emu.rdna2_operands import FIELDS
 
 ACTIVE = "((s[126] >> lane) & 1u) != 0"
@@ -121,6 +121,24 @@ def _carry(name, a, b, carry_in, vdst, carry_out):
             f"{carry_out} = Ballot(lane, o); }}"]
 
 
+def _mad64(name, a, b, fields):
+    """S0 × S1 + S2 sur 64 bits ; v_mad_i64_i32 corrige le produit non signé par les signes."""
+    code = fields.sources[2]
+    if code == 255:
+        raise Untranslatable(f"non traduite en HLSL : {name} avec littéral 64 bits")
+    low, high = source(code), source_high(code)
+    if name == "v_mad_i64_i32":
+        if fields.sdst != NULL:
+            raise Untranslatable("v_mad_i64_i32 : retenue signée dans SDST non vérifiée")
+        product_high = "MulHiI32(x, y)"
+    else:
+        product_high = "MulHiU32(x, y)"
+    return [f"{{ uint x = {a}, y = {b}; uint pl = x * y, ph = {product_high}; uint rl = pl + {low}; "
+            f"uint rh = ph + {high}; bool o = rh < ph; uint rh2 = rh + (rl < pl ? 1u : 0u); o = o || rh2 < rh; "
+            f"if ({ACTIVE}) {{ v[{fields.vdst}] = rl; v[{fields.vdst + 1}] = rh2; }} "
+            f"{scalar_target(fields.sdst)} = Ballot(lane, ({ACTIVE}) && o); }}"]
+
+
 def _modified(code, index, fields, literal, is_float):
     operand = source(code, literal)
     if is_float and fields.abs >> index & 1:
@@ -140,6 +158,12 @@ def _vop3(name, opcode, fields, literal):
         return _carry(name, a, b, c, fields.vdst, scalar_target(fields.sdst))
     if name == "v_readlane_b32":
         return [f"{scalar_target(fields.vdst)} = ReadLane(lane, {a}, {b});"]
+    if name == "v_readfirstlane_b32":
+        return [f"{scalar_target(fields.vdst)} = ReadLane(lane, {a}, firstbitlow(s[126]));"]
+    if name in VECTOR_NO_OPERATION:
+        return []
+    if name in MAD64:
+        return _mad64(name, a, b, fields)
     if name == "v_writelane_b32":
         return [f"if (lane == ({b} & 31u)) v[{fields.vdst}] = {a};"]
     if name not in VECTOR:
@@ -293,7 +317,7 @@ def body(data, sgprs=None, finish="return;", special=None):
 
 def coverage_names():
     """Mnémoniques que le recompilateur sait traduire (hors mémoire, comptée à part)."""
-    return set(SCALAR) | set(VECTOR) | set(BRANCHES) | set(CARRY) | VECTOR_NO_OPERATION | {"s_endpgm", "v_readlane_b32",
+    return set(SCALAR) | set(VECTOR) | set(BRANCHES) | set(CARRY) | VECTOR_NO_OPERATION | MAD64 | {"s_endpgm", "v_readlane_b32",
                                                                       "v_writelane_b32", "v_readfirstlane_b32"}
 
 

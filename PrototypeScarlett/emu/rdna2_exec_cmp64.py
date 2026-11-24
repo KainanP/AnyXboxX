@@ -71,7 +71,8 @@ def _untranslated(message):
     return Untranslated(message)
 
 
-def _read64(wave, code, lane, is_float):
+def read64(wave, code, lane, is_float):
+    """Source 64 bits d'une ligne (paire de registres ou constante en ligne)."""
     if code >= VGPR_FIRST:
         register = code - VGPR_FIRST
         return wave.v[register][lane] | wave.v[register + 1][lane] << 32
@@ -89,9 +90,9 @@ def _sources(wave, kind, codes, lane, literal):
     if kind == "class32":
         return wave.read_lane(codes[0], lane, literal), wave.read_lane(codes[1], lane, literal)
     if kind == "class64":
-        return _read64(wave, codes[0], lane, True), wave.read_lane(codes[1], lane, literal)
+        return read64(wave, codes[0], lane, True), wave.read_lane(codes[1], lane, literal)
     is_float = kind == "f64"
-    return _read64(wave, codes[0], lane, is_float), _read64(wave, codes[1], lane, is_float)
+    return read64(wave, codes[0], lane, is_float), read64(wave, codes[1], lane, is_float)
 
 
 def _modify(value, index, kind, abs_bits, neg_bits):

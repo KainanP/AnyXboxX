@@ -88,3 +88,43 @@ OPERATIONS = {
 }
 # Résultat sur 32 bits (le VGPR entier) ; les autres écrivent une moitié et gardent l'autre.
 WORD_RESULT = frozenset({"v_cvt_f32_f16"})
+VGPR_FIRST = 256
+EXTENSIONS = frozenset({0xE9, 0xEA, 0xF9, 0xFA})        # src0 de DPP8, DPP8_FI, SDWA, DPP16
+
+
+def _refuse(message):
+    from emu.rdna2_exec import Untranslated
+
+    raise Untranslated(message)
+
+
+def _source(wave, name, kind, code, lane, literal, high=False):
+    """Source selon son type : mot f32 entier, ou 16 bits (moitié de registre, constante, littéral)."""
+    if kind == "w":
+        return wave.read_lane(code, lane, literal)
+    if code < 128 or code >= VGPR_FIRST:                 # SGPR, VCC, M0, EXEC, NULL et VGPR
+        word = wave.read_lane(code, lane, literal)
+        return word >> 16 if high else word & 0xFFFF
+    if high:
+        _refuse(f"{name} : op_sel sur la moitié haute d'une constante non pris en charge")
+    if code in INLINE_HALVES:
+        if kind == "i":
+            _refuse(f"{name} : constante flottante sur une source entière non prise en charge")
+        return INLINE_HALVES[code]
+    return wave.read_scalar(code, literal) & 0xFFFF      # constante entière ou littéral : 16 bits bas
+
+
+def execute(wave, name, fields, literal):
+    """VOP1/VOP2 f16 : sources et résultat dans la moitié basse ; la moitié haute de vdst est gardée."""
+    if fields["src0"] in EXTENSIONS:
+        _refuse(f"{name} : forme SDWA/DPP (src0 = 0x{fields['src0']:X}) non prise en charge en f16")
+    kinds, operation = OPERATIONS[name]
+    codes = (fields["src0"], VGPR_FIRST + fields["vsrc1"]) if "vsrc1" in fields else (fields["src0"],)
+    destination = wave.v[fields["vdst"]]
+    k = (literal or 0) & 0xFFFF
+    for lane in wave.active():
+        values = [_source(wave, name, kind, code, lane, literal) for kind, code in zip(kinds, codes)]
+        a, b = (values + [0])[:2]
+        old = destination[lane]
+        result = operation(a, b, 0, old & 0xFFFF, k)
+        destination[lane] = result if name in WORD_RESULT else (old & 0xFFFF_0000) | result

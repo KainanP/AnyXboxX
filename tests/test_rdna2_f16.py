@@ -2,8 +2,13 @@
 d'après la documentation ISA d'AMD (arrondi au plus proche pair, dénormaux conservés)."""
 import math
 
-from emu import rdna2_exec_f16 as f16
+import pytest
+
+from emu import rdna2_exec, rdna2_exec_f16 as f16
 from emu.rdna2_exec_ops import float_bits
+from test_rdna2_exec import EXEC_LO, LITERAL, ONE, V, const, program, sop1, vop1, vop2
+
+OLD = 0x1234_5678               # destination avant l'instruction : sa moitié haute doit rester
 
 
 def run(name, a=0, b=0, c=0, d=0, k=0):
@@ -75,3 +80,60 @@ def test_conversions_between_f16_and_f32():
 def test_clamp_to_the_unit_interval():
     assert [f16.half_clamp(h) for h in (0x7E00, 0x8000, 0xBC00, 0x4000, 0x3800, 0x7C00)] == \
         [0, 0, 0, 0x3C00, 0x3800, 0x3C00]
+
+
+def execute(*words, v=None, s=None):
+    wave = rdna2_exec.Wave()
+    for register, word in (v or {}).items():
+        wave.v[register] = [word] * 32
+    for register, word in (s or {}).items():
+        wave.s[register] = word
+    rdna2_exec.run(program(*words), wave)
+    return wave
+
+
+def test_vop2_writes_the_low_half_and_keeps_the_high_half():
+    wave = execute(vop2("v_add_f16", 3, V + 1, 2), v={1: 0xAAAA_3C00, 2: 0x5555_4000, 3: OLD})
+    assert wave.v[3][0] == 0x1234_4200
+
+
+def test_constants_literals_and_scalars_give_16_bit_operands():
+    assert execute(vop2("v_add_f16", 3, ONE, 2), v={2: 0x4000, 3: OLD}).v[3][0] == 0x1234_4200
+    assert execute(vop2("v_add_f16", 3, const(1), 2), v={2: 0x3C00, 3: OLD}).v[3][0] == 0x1234_3C00
+    assert execute(vop2("v_add_f16", 3, LITERAL, 2), 0xDEAD_3C00, v={2: 0x3C00, 3: OLD}).v[3][0] == 0x1234_4000
+    assert execute(vop2("v_add_f16", 3, 4, 2), v={2: 0x3800, 3: OLD}, s={4: 0xFFFF_3800}).v[3][0] == 0x1234_3C00
+
+
+def test_accumulate_constant_and_conversion_forms():
+    seeds = {1: 0x7777_4000, 2: 0x6666_4200, 3: 0x9999_3C00}
+    assert execute(vop2("v_fmac_f16", 3, V + 1, 2), v=seeds).v[3][0] == 0x9999_4700        # 2 × 3 + 1
+    assert execute(vop2("v_fmamk_f16", 3, V + 1, 2), 0x4200, v={1: 0x4000, 2: 0x3C00, 3: OLD}).v[3][0] == 0x1234_4700
+    assert execute(vop2("v_fmaak_f16", 3, V + 1, 2), 0x3C00, v={1: 0x4000, 2: 0x4200, 3: OLD}).v[3][0] == 0x1234_4700
+    assert execute(vop2("v_ldexp_f16", 3, V + 1, 2), v={1: 0x3C00, 2: 0xFFFF_FFFF, 3: OLD}).v[3][0] == 0x1234_3800
+    assert execute(vop1("v_cvt_f32_f16", 3, V + 1), v={1: 0xAAAA_0001, 3: OLD}).v[3][0] == 0x3380_0000
+    assert execute(vop1("v_cvt_f16_f32", 3, V + 1), v={1: 0x3F80_0000, 3: OLD}).v[3][0] == 0x1234_3C00
+    assert execute(vop1("v_cvt_f16_f32", 3, ONE), v={3: OLD}).v[3][0] == 0x1234_3C00            # 1.0 en f32
+
+
+def test_lanes_outside_exec_keep_both_halves():
+    wave = execute(sop1("s_mov_b32", EXEC_LO, LITERAL), 0x0000_FFFF, vop2("v_add_f16", 3, V + 1, 2),
+                   v={1: 0x3C00, 2: 0x3C00, 3: OLD})
+    assert wave.v[3][:16] == [0x1234_4000] * 16 and wave.v[3][16:] == [OLD] * 16
+
+
+def test_destination_may_be_a_source():
+    assert execute(vop2("v_add_f16", 1, V + 1, 2), v={1: 0xABCD_3C00, 2: 0x3C00}).v[1][0] == 0xABCD_4000
+    assert execute(vop2("v_fmac_f16", 2, V + 2, 2), v={2: 0xABCD_4000}).v[2][0] == 0xABCD_4600     # 2 × 2 + 2
+
+
+@pytest.mark.parametrize("code", [0xE9, 0xEA, 0xF9, 0xFA])
+def test_sdwa_and_dpp_forms_are_refused(code):
+    with pytest.raises(rdna2_exec.Untranslated, match="v_add_f16.*SDWA/DPP"):
+        execute(vop2("v_add_f16", 3, code, 2), 0)
+
+
+def test_vop1_and_vop2_f16_encodings_are_executable():
+    names = ["v_add_f16", "v_sub_f16", "v_subrev_f16", "v_mul_f16", "v_fmac_f16", "v_fmamk_f16", "v_fmaak_f16",
+             "v_max_f16", "v_min_f16", "v_ldexp_f16"]
+    assert all(rdna2_exec.executable("VOP2", name) for name in names)
+    assert rdna2_exec.executable("VOP1", "v_cvt_f16_f32") and rdna2_exec.executable("VOP1", "v_cvt_f32_f16")

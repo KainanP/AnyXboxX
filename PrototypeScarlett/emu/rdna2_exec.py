@@ -9,7 +9,7 @@ qui les nomme, ce qui mesure ce qui reste à traduire.
 import struct
 
 from emu import (rdna2, rdna2_exec_cmp64, rdna2_exec_ext, rdna2_exec_graphics, rdna2_exec_image,
-                 rdna2_exec_memory, rdna2_exec_vop3, rdna2_exec_wide)
+                 rdna2_exec_memory, rdna2_exec_movrel, rdna2_exec_vop3, rdna2_exec_wide)
 from emu.rdna2_exec_ops import SCALAR, VECTOR, VECTOR_COMPARE, VECTOR_NO_OPERATION, BRANCHES, float_bits
 
 LANES = 32
@@ -128,6 +128,8 @@ def step(wave, data):
     if name in BRANCHES:
         if BRANCHES[name](wave):
             next_pc = wave.pc + rdna2.DWORD + _signed16(fields["simm16"]) * rdna2.DWORD
+    elif name in rdna2_exec_movrel.SCALAR and family == "SOP1":
+        rdna2_exec_movrel.scalar(wave, name, fields, literal)
     elif name in SCALAR:
         SCALAR[name](wave, fields, literal)
     elif name in VECTOR_NO_OPERATION:
@@ -138,6 +140,10 @@ def step(wave, data):
         rdna2_exec_wide.execute(wave, name, (fields["src0"],), fields["vdst"], literal)
     elif name in rdna2_exec_cmp64.COMPARE64 and family == "VOPC":
         rdna2_exec_cmp64.execute(wave, name, (fields["src0"], VGPR_FIRST + fields["vsrc1"]), literal)
+    elif name in rdna2_exec_movrel.VECTOR and family == "VOP1":
+        if rdna2_exec_ext.is_ext(family, fields.get("src0")):
+            raise Untranslated(f"instruction non traduite : {name} (SDWA/DPP)")
+        rdna2_exec_movrel.vector(wave, name, fields["vdst"], fields["src0"], literal)
     elif name in VOP2_CARRY and family == "VOP2":
         if rdna2_exec_ext.is_ext(family, fields.get("src0")):
             raise Untranslated(f"instruction non traduite : {name} (SDWA/DPP)")
@@ -211,7 +217,8 @@ def run(data, wave=None, max_steps=MAX_STEPS):
 
 VOP2_CARRY = frozenset({"v_add_co_ci_u32", "v_sub_co_ci_u32", "v_subrev_co_ci_u32"})
 EXECUTABLE = frozenset({"s_endpgm", *SCALAR, *VECTOR, *VECTOR_COMPARE, *VECTOR_NO_OPERATION, *BRANCHES,
-                        *VOP2_CARRY, *rdna2_exec_cmp64.COMPARE64, *rdna2_exec_wide.OPERATIONS})
+                        *VOP2_CARRY, *rdna2_exec_cmp64.COMPARE64, *rdna2_exec_wide.OPERATIONS,
+                        *rdna2_exec_movrel.VECTOR, *rdna2_exec_movrel.SCALAR})
 
 
 def executable(family, name):

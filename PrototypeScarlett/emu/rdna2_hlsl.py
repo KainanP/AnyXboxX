@@ -12,7 +12,7 @@ import struct
 import sys
 
 from emu import (rdna2, rdna2_exec_div, rdna2_exec_wide, rdna2_hlsl_div, rdna2_hlsl_ext, rdna2_hlsl_image,
-                 rdna2_hlsl_wide)
+                 rdna2_hlsl_movrel, rdna2_hlsl_wide)
 from emu.rdna2_exec_ops import signed
 from emu.rdna2_exec_ops import VECTOR_NO_OPERATION
 from emu.rdna2_exec_vop3 import MAD64, Fields, float_inputs, float_result
@@ -120,6 +120,8 @@ def _vector(name, fields, literal):
         return []
     if name in rdna2_exec_wide.OPERATIONS:
         return rdna2_hlsl_wide.statements(name, (fields["src0"],), fields["vdst"], ACTIVE)
+    if name in rdna2_hlsl_movrel.VECTOR:
+        return rdna2_hlsl_movrel.vector(name, fields["vdst"], fields["src0"], literal, ACTIVE)
     if name in CARRY:                       # forme VOP2 : retenue lue et écrite dans VCC
         return _carry(name, a, values["b"], "s[106]", fields["vdst"], "s[106]")
     if is_compare(name):
@@ -186,6 +188,10 @@ def _vop3(name, opcode, fields, literal):
                                           fields.clamp, fields.omod)
     if name in rdna2_exec_div.OPERATIONS:
         return rdna2_hlsl_div.statements(name, fields, literal, ACTIVE)
+    if name in rdna2_hlsl_movrel.VECTOR:
+        if fields.abs or fields.neg or fields.clamp or fields.omod:
+            raise Untranslatable(f"non traduite en HLSL : {name} avec modificateurs VOP3")
+        return rdna2_hlsl_movrel.vector(name, fields.vdst, fields.sources[0], literal, ACTIVE)
     if name == "v_writelane_b32":
         return [f"if (lane == ({b} & 31u)) v[{fields.vdst}] = {a};"]
     if name not in VECTOR:
@@ -210,6 +216,8 @@ def statements(data, instruction, finish="return;", special=None):
     translated = special(family, name, pair) if special else None
     if translated is not None:
         return translated
+    if family == "SOP1" and name in rdna2_hlsl_movrel.SCALAR:
+        return rdna2_hlsl_movrel.scalar(name, _fields(family, first), _literal(data, instruction, 1))
     if family in SCALAR_FAMILIES:
         if name not in SCALAR:
             raise Untranslatable(f"non traduite en HLSL : {name}")
@@ -340,7 +348,7 @@ def body(data, sgprs=None, finish="return;", special=None):
 def coverage_names():
     """Mnémoniques que le recompilateur sait traduire (hors mémoire, comptée à part)."""
     return (set(SCALAR) | set(VECTOR) | set(BRANCHES) | set(CARRY) | VECTOR_NO_OPERATION | MAD64
-            | rdna2_hlsl_wide.TRANSLATED | rdna2_hlsl_div.TRANSLATED
+            | rdna2_hlsl_wide.TRANSLATED | rdna2_hlsl_div.TRANSLATED | rdna2_hlsl_movrel.TRANSLATED
             | {"s_endpgm", "v_readlane_b32", "v_writelane_b32", "v_readfirstlane_b32"})
 
 

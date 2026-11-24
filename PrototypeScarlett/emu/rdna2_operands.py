@@ -236,12 +236,34 @@ def default_shape(family):
 VCC_DESTINATION = ("=", "vcc_lo")
 
 
-def fallback_shape(family, name):
-    """Forme d'un opcode absent des tests de LLVM : les VOPC hors v_cmpx écrivent vcc (wave32)."""
+def fallback_shape(family, name, opcode=None):
+    """Forme d'un opcode absent des tests de LLVM : les VOPC hors v_cmpx écrivent vcc (wave32) ;
+    la forme VOP3 d'une VOP1 a une seule source (v_sat_pk_u8_i16_e64) ; un opcode _f64 prend la
+    forme apprise de son jumeau _f32, registres vectoriels et sources en 64 bits (v_div_scale_f64)."""
+    twin = _f32_twin_shape(family, name)
+    if twin is not None:
+        return tuple((field, 2) if field in WIDE_FIELDS and width == 1 else (field, width) for field, width in twin)
+    if family == "VOP3" and opcode is not None and VOP1_IN_VOP3[0] <= opcode < VOP1_IN_VOP3[1]:
+        return (("vdst", 1), ("src0", 1))
     shape = default_shape(family)
     if family == "VOPC" and not name.startswith("v_cmpx"):
         return (VCC_DESTINATION, *shape)
     return shape
+
+
+VOP1_IN_VOP3 = (0x180, 0x200)
+WIDE_FIELDS = frozenset({"vdst", "src0", "src1", "src2"})
+
+
+def _f32_twin_shape(family, name):
+    from emu.rdna2_ops import MNEMONICS
+    from emu.rdna2_shapes import SHAPES
+
+    if not name.endswith("_f64"):
+        return None
+    twin = name.removesuffix("_f64") + "_f32"
+    return next((SHAPES[key] for key, found in MNEMONICS.items()
+                 if key[0] == family and found == twin and key in SHAPES), None)
 
 
 def vop3_name(name, opcode):
@@ -273,7 +295,7 @@ def text(data, offset=0):
     word, literal = _words(data, offset, family, size)
     if word is None:
         return None
-    shape = SHAPES[(family, opcode)] if (family, opcode) in SHAPES else fallback_shape(family, name)
+    shape = SHAPES[(family, opcode)] if (family, opcode) in SHAPES else fallback_shape(family, name, opcode)
     if family in E32_FAMILIES:
         if word & SRC0_MASK in rdna2.VOP_EXTENSIONS:       # SDWA, DPP : second mot de contrôle
             return rdna2_operands_ext.text(family, name, data, offset, shape)

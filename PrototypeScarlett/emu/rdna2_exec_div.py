@@ -17,8 +17,9 @@ RDNA 2 :
   sans effet sur la division : le NaN traverse v_div_fmas et v_div_fixup traite 0) ;
 - v_div_scale, branche « 1/S1 dénormal » : en f32 elle compare à un dénormal f64 et n'est jamais
   prise (lecture littérale) ; en f64, la branche combinée multiplie un dénominateur déjà proche du
-  maximum par 2^128 (dépassement) : elle lève Untranslated. v_div_scale_f64 (VOP3 0x16E) manque
-  d'ailleurs à la table tirée des tests de LLVM (emu/rdna2_ops.py) et n'est pas décodée ;
+  maximum par 2^128 (dépassement) : elle lève Untranslated. v_div_scale_f64 (VOP3 0x16E), absente
+  des tests d'encodage gfx10 de LLVM, est décodée depuis VOP3Instructions.td (tools/rdna2_mnemonics.py)
+  mais pas encore exécutée ;
 - v_div_fixup : S0 NaN donne ±infini (CLRX et tinygrad ; absent du pseudo-code) ; UNDERFLOW = ±0,
   seule valeur cohérente avec l'arrondi au plus près sous la condition exposant(S2) - exposant(S1) < -150.
 Les dénormaux sont conservés (mode IEEE, celui où LLVM émet cette séquence) ; clamp et omod lèvent

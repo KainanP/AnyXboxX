@@ -271,3 +271,18 @@ def test_implicit_vcc_and_scalar_destination():
     text = rdna2_operands.text
     assert text(llvm(0x01, 0x05, 0x0A, 0x02)) == "v_cndmask_b32_e32 v5, v1, v2, vcc_lo"    # vcc implicite (wave32)
     assert text(llvm(0x01, 0x05, 0x0A, 0x7E)) == "v_readfirstlane_b32 s5, v1"          # sdst dans le champ vdst
+
+
+@pytest.mark.parametrize("encoding, expected", [
+    # Absentes des tests gfx10 de LLVM (ni assembleur, ni désassembleur) : opcodes de VOP3Instructions.td
+    # (VOP3be_Real_gfx6_gfx7_gfx10<0x16e>) et des lignes « // GFX10: [...] » de gfx10_asm_dpp16.s ;
+    # texte au format de LLVM (gfx11_asm_vop3.s : « v_div_scale_f64 v[5:6], vcc_lo, v[1:2], ... »).
+    ((0x05, 0x6A, 0x6E, 0xD5, 0x01, 0x05, 0x0E, 0x04), "v_div_scale_f64 v[5:6], vcc_lo, v[1:2], v[2:3], v[3:4]"),
+    ((0x05, 0x00, 0x6E, 0xD5, 0xFE, 0xFD, 0x1B, 0x00), "v_div_scale_f64 v[5:6], s0, v[254:255], v[254:255], s[6:7]"),
+    ((0x01, 0xC5, 0x0A, 0x7E), "v_sat_pk_u8_i16_e32 v5, v1"),
+    ((0x05, 0x00, 0xE2, 0xD5, 0x01, 0x01, 0x00, 0x00), "v_sat_pk_u8_i16_e64 v5, v1"),
+    ((0xFA, 0xC4, 0x0A, 0x7E, 0x01, 0x1B, 0x00, 0x00),
+     "v_sat_pk_u8_i16_dpp v5, v1 quad_perm:[3,2,1,0] row_mask:0x0 bank_mask:0x0"),
+])
+def test_div_scale_f64_and_sat_pk_are_decoded(encoding, expected):
+    assert rdna2_operands.text(bytes(encoding)) == expected

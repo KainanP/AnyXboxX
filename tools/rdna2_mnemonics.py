@@ -3,12 +3,15 @@
 Source : les tests d'encodage publics de LLVM (llvm/test/MC/AMDGPU/gfx10_asm_*.s,
 gfx1030_new.s et mtbuf-gfx10.s, licence Apache 2.0 avec exception LLVM). Chaque ligne « encoding: [...] »
 est passée au décodeur d'AnyXboxX ; on vérifie au passage que la longueur qu'il calcule
-est celle de LLVM. Les noms de gfx1030 (RDNA 2) l'emportent sur ceux de gfx1010.
+est celle de LLVM. Les noms de gfx1030 (RDNA 2) l'emportent sur ceux de gfx1010. Les lignes
+sans « encoding: » (« // GFX10: [0xfa,...] », gfx10_asm_dpp16.s, dpp8.s, mimg.s) comptent aussi :
+l'instruction est alors la ligne source qui les précède (seule source de v_sat_pk_u8_i16).
 
-Seconde source : les fichiers .td du même dossier (llvm/lib/Target/AMDGPU/VOP3PInstructions.td),
-dont les lignes « defm V_… : VOP3P_Real_gfx10…<0xNN> » donnent les opcodes VOP3P gfx10, absents
-des tests d'encodage. Elles ne complètent que les opcodes que les encodages ne nomment pas ; un
-désaccord entre les deux sources est signalé.
+Seconde source : les fichiers .td du même dossier (llvm/lib/Target/AMDGPU/VOP3PInstructions.td et
+VOP3Instructions.td), dont les lignes « defm V_… : VOP3P_Real_gfx10…<0xNN> » ou
+« VOP3…_Real_…gfx10…<0xNNN> » donnent les opcodes VOP3P et VOP3 gfx10 ; v_div_scale_f64 et les
+opcodes VOP3P n'ont aucun test d'encodage gfx10. Elles ne complètent que les opcodes que les
+encodages ne nomment pas ; un désaccord entre les deux sources est signalé.
 
     python tools/rdna2_mnemonics.py <dossier des .s et .td> [--verifier]
 """
@@ -23,17 +26,20 @@ from emu import rdna2  # noqa: E402
 
 OUTPUT = ROOT / "PrototypeScarlett" / "emu" / "rdna2_ops.py"
 ENCODING = re.compile(r"^\s*(?://|;)\s*([A-Z0-9_,-]*?):\s*(.*?)\s*;?\s*encoding:\s*\[([^\]]*)\]")
+BARE_ENCODING = re.compile(r"^\s*(?://|;)\s*([A-Z0-9_,-]+):\s*()\[(\s*0x[0-9a-fA-F]{2}(?:\s*,\s*0x[0-9a-fA-F]{2})*\s*)\]\s*$")
 SUFFIX = re.compile(r"_(e32|e64|sdwa|dpp|dpp8)$")
 RDNA2_FILE = "gfx1030"
 # Les opcodes VOP3 reprennent VOPC (0x000), VOP2 (0x100) et VOP1 (0x180).
 VOP3_BASES = (("VOPC", 0x000, 0x100), ("VOP2", 0x100, 0x40), ("VOP1", 0x180, 0x80))
 
 
-def llvm_lines(folder):
+def llvm_lines(folder, bare=False):
     """(fichier, préfixe, instruction, octets) de chaque ligne d'encodage des tests LLVM.
 
     Quand le commentaire ne contient que l'encodage (« // W32: encoding: [...] »),
-    l'instruction est la dernière ligne source qui le précède."""
+    l'instruction est la dernière ligne source qui le précède. Avec `bare`, les octets seuls
+    (« // GFX10: [...] ») comptent aussi ; leur instruction est le texte source, pas celui que
+    LLVM écrit : bon pour le mnémonique, pas pour comparer le texte des opérandes."""
     for path in sorted(Path(folder).glob("*.s")):
         source = ""
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -41,7 +47,7 @@ def llvm_lines(folder):
             if stripped and not stripped.startswith(("//", ";", ".")):
                 source = stripped.split("//")[0].strip()
                 continue
-            match = ENCODING.match(line)
+            match = ENCODING.match(line) or (bare and BARE_ENCODING.match(line))
             if match:
                 data = bytes(int(b, 16) for b in match.group(3).split(","))
                 yield path.name, match.group(1), match.group(2) or source, data
@@ -49,7 +55,7 @@ def llvm_lines(folder):
 
 def read_encodings(folder):
     """(fichier, mnémonique, octets) de chaque ligne d'encodage des tests LLVM."""
-    for name, _, instruction, data in llvm_lines(folder):
+    for name, _, instruction, data in llvm_lines(folder, bare=True):
         if instruction and instruction[0].isalpha():
             yield name, SUFFIX.sub("", instruction.split()[0].rstrip(",")), data
 
@@ -102,17 +108,21 @@ def _complete_segments(table):
             table[(segment, opcode)] = f"{segment.lower()}_{operation}"
 
 
-TD_GFX10 = re.compile(r"^\s*defm\s+(V_\w+)\s*:\s*VOP3P_Real_gfx10\w*\s*<\s*(0x[0-9A-Fa-f]+)\s*>")
+# « defm V_X : VOP3be_Real_gfx6_gfx7_gfx10<0x16e>; », « … : VOP3OpSel_Real_gfx10_with_name<0x14e,
+# "V_ALIGNBIT_B32_opsel", "v_alignbit_b32">; » : famille, opcode, et nom d'assembleur s'il diffère.
+TD_GFX10 = re.compile(r'^\s*defm\s+(V_\w+)\s*:\s*(VOP3P?)(?:[A-Za-z]*)_Real_\w*?gfx10\w*\s*'
+                      r'<\s*(0x[0-9A-Fa-f]+)\s*(?:,\s*"\w+"\s*,\s*"(\w+)"\s*)?>')
 
 
 def td_mnemonics(folder):
-    """(« VOP3P », opcode) → mnémonique, d'après les définitions gfx10 des fichiers .td du dossier."""
+    """(« VOP3P » ou « VOP3 », opcode) → mnémonique, d'après les définitions gfx10 des .td du dossier."""
     table = {}
     for path in sorted(Path(folder).glob("*.td")):
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             match = TD_GFX10.match(line)
             if match:
-                table[("VOP3P", int(match.group(2), 16))] = match.group(1).lower()
+                name = match.group(4) or SUFFIX.sub("", match.group(1).lower())
+                table[(match.group(2), int(match.group(3), 16))] = name
     return table
 
 

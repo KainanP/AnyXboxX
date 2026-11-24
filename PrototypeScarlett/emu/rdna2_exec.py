@@ -8,8 +8,8 @@ qui les nomme, ce qui mesure ce qui reste à traduire.
 """
 import struct
 
-from emu import (rdna2, rdna2_exec_cmp64, rdna2_exec_ext, rdna2_exec_graphics, rdna2_exec_image,
-                 rdna2_exec_memory, rdna2_exec_movrel, rdna2_exec_vop3, rdna2_exec_wide)
+from emu import (rdna2, rdna2_exec_cmp64, rdna2_exec_ext, rdna2_exec_format, rdna2_exec_graphics,
+                 rdna2_exec_image, rdna2_exec_memory, rdna2_exec_movrel, rdna2_exec_vop3, rdna2_exec_wide)
 from emu.rdna2_exec_ops import SCALAR, VECTOR, VECTOR_COMPARE, VECTOR_NO_OPERATION, BRANCHES, float_bits
 
 LANES = 32
@@ -24,6 +24,7 @@ INLINE_FLOATS = {240: 0.5, 241: -0.5, 242: 1.0, 243: -1.0, 244: 2.0, 245: -2.0, 
 MAX_STEPS = 1_000_000
 DECODED_FAMILIES = frozenset({"SOP1", "SOP2", "SOPC", "SOPK", "SOPP", "VOP1", "VOP2", "VOPC"})
 MEMORY_FAMILIES = frozenset({"SMEM", "DS", "MUBUF", "FLAT", "GLOBAL", "SCRATCH"})
+FORMAT_FAMILIES = frozenset({"MUBUF", "MTBUF"})            # accès typés : emu/rdna2_exec_format.py
 
 
 class Untranslated(NotImplementedError):
@@ -127,6 +128,10 @@ def step(wave, data):
         return True
     if family in rdna2_exec_image.FAMILIES:
         rdna2_exec_image.execute(wave, name, int.from_bytes(data[wave.pc:wave.pc + size * rdna2.DWORD], "little"))
+        wave.pc += size * rdna2.DWORD
+        return True
+    if family in FORMAT_FAMILIES and rdna2_exec_format.supports(name):
+        rdna2_exec_format.execute(wave, name, int.from_bytes(data[wave.pc:wave.pc + 2 * rdna2.DWORD], "little"))
         wave.pc += size * rdna2.DWORD
         return True
     if family in MEMORY_FAMILIES:
@@ -248,6 +253,8 @@ def executable(family, name):
         return rdna2_exec_graphics.supports(family, name)
     if family in rdna2_exec_image.FAMILIES:
         return rdna2_exec_image.supports(family, name)
+    if family in FORMAT_FAMILIES and rdna2_exec_format.supports(name):
+        return True
     if family in MEMORY_FAMILIES:
         return rdna2_exec_memory.supports(name)
     return family in DECODED_FAMILIES and name in EXECUTABLE

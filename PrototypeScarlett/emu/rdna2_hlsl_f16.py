@@ -114,3 +114,47 @@ def vector(name, fields, literal, active):
     d = fields["vdst"]
     expression = TEMPLATES[name].format(a=a, b=b, c="0u", d=f"(v[{d}] & 0xFFFFu)", k=hexa((literal or 0) & 0xFFFF))
     return [f"if ({active}) v[{d}] = {_written(name, d, expression, False)};"]
+
+
+def _check_vop3(name, kinds, fields, literal):
+    """Formes VOP3 dont le comportement n'est pas sourcé : refusées comme dans l'interpréteur."""
+    if name in WORD_RESULT and (fields.clamp or fields.omod):
+        raise Untranslatable(f"{name} : clamp ou omod sur un résultat f32 non pris en charge")
+    if fields.omod:
+        raise Untranslatable(f"{name} : omod sur un résultat f16 non pris en charge")
+    if fields.op_sel and name == "v_fmac_f16":
+        raise Untranslatable(f"{name} : op_sel non pris en charge en VOP3")
+    if fields.op_sel >> 3 & 1 and name in WORD_RESULT:
+        raise Untranslatable(f"{name} : op_sel sur une destination de 32 bits non pris en charge")
+    if name in ("v_fmamk_f16", "v_fmaak_f16") and literal is None:
+        raise Untranslatable(f"{name} (VOP3) : sans littéral, la constante K n'existe pas")
+    for index, kind in enumerate(kinds):
+        if kind == "w" and fields.op_sel >> index & 1:
+            raise Untranslatable(f"{name} : op_sel sur une source de 32 bits non pris en charge")
+        if kind == "i" and (fields.abs | fields.neg) >> index & 1:
+            raise Untranslatable(f"{name} : abs/neg sur une source entière non pris en charge")
+
+
+def _modified(operand, kind, fields, index):
+    """abs et neg de VOP3 : bit de signe de la moitié f16 (bit 15) ou du mot f32 (bit 31)."""
+    if kind == "i":
+        return operand
+    if fields.abs >> index & 1:
+        operand = f"({operand} & {'0x7FFFFFFFu' if kind == 'w' else '0x7FFFu'})"
+    if fields.neg >> index & 1:
+        operand = f"({operand} ^ {'0x80000000u' if kind == 'w' else '0x8000u'})"
+    return operand
+
+
+def vop3(name, fields, literal, active):
+    """VOP3 f16 : op_sel (bits 0 à 2) lit la moitié haute d'une source, op_sel bit 3 écrit le résultat dans la
+    moitié haute de vdst et garde la basse ; clamp borne le résultat f16 à [0, 1]."""
+    kinds = OPERATIONS[name][0]
+    _check_vop3(name, kinds, fields, literal)
+    a, b, c = ([_modified(_operand(name, kind, code, literal, fields.op_sel >> index & 1), kind, fields, index)
+                for index, (kind, code) in enumerate(zip(kinds, fields.sources))] + ["0u", "0u"])[:3]
+    d = fields.vdst
+    expression = TEMPLATES[name].format(a=a, b=b, c=c, d=f"(v[{d}] & 0xFFFFu)", k=hexa((literal or 0) & 0xFFFF))
+    if fields.clamp:
+        expression = f"F16Clamp({expression})"
+    return [f"if ({active}) v[{d}] = {_written(name, d, expression, fields.op_sel >> 3 & 1)};"]

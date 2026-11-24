@@ -171,7 +171,7 @@ def test_vop3_fma_literal_and_vop2_forms():
     assert execute(*vop3("v_fmamk_f16", 3, LITERAL, V + 2), 0x0000_4000, v={2: 0x3C00, 3: OLD}).v[3][0] == 0x1234_4500
 
 
-REFUSED_VOP3 = [
+REFUSED_VOP3 = [                                     # partagé avec tests/test_rdna2_hlsl_f16.py
     (vop3("v_add_f16", 3, V + 1, V + 2, omod=1), "v_add_f16.*omod"),
     (vop3("v_add_f16", 3, ONE, V + 2, op_sel=0b0001), "v_add_f16.*op_sel"),
     (vop3("v_fmac_f16", 3, V + 1, V + 2, op_sel=0b1000), "v_fmac_f16.*op_sel"),

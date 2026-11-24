@@ -6,8 +6,9 @@ import struct
 import pytest
 
 from emu import rdna2_gpu, rdna2_hlsl, rdna2_hlsl_graphics
-from test_rdna2_exec import EXEC_LO, LITERAL, ONE, V, const, program, sop1, sop2, vop1, vop2
+from test_rdna2_exec import EXEC_LO, LITERAL, ONE, V, const, program, sop1, sop2, vop1, vop2, vop3
 from test_rdna2_exec_memory import INPUT, global_
+from test_rdna2_f16 import REFUSED_VOP3
 from test_rdna2_graphics import PIXEL_SHADER, VERTEX_SHADER, WIDTH
 from test_rdna2_hlsl import compare, store_lane, with_lane_offset
 
@@ -99,4 +100,28 @@ def test_f16_exec_mask_and_aliasing_match_the_interpreter():
         vop2("v_add_f16", 1, V + 1, 2), vop2("v_fmac_f16", 2, V + 2, 2), vop1("v_cvt_f16_f32", 5, V + 5),
         sop1("s_mov_b32", EXEC_LO, 193),                                                         # EXEC = -1
         *store_lane(1, 0), *store_lane(2, 1), *store_lane(5, 2)), memory=image())
+    assert actual == expected
+
+
+@pytest.mark.parametrize("words, pattern", REFUSED_VOP3)
+def test_unsourced_vop3_forms_are_untranslatable(words, pattern):
+    with pytest.raises(rdna2_hlsl.Untranslatable, match=pattern):
+        rdna2_hlsl.translate(program(*words))
+
+
+@gpu
+def test_f16_vop3_match_the_interpreter():
+    operations = [vop3("v_add_f16", 10, V + 1, V + 2, op_sel=op_sel) for op_sel in (0b0001, 0b0010, 0b1000, 0b1011)]
+    operations += [vop3(name, 10, V + 1, V + 2, neg=0b01, abs_=0b10)
+                   for name in ("v_sub_f16", "v_mul_f16", "v_min_f16", "v_max_f16")]
+    operations += [vop3("v_add_f16", 10, V + 1, V + 2, clamp=1), vop3("v_mul_f16", 10, V + 1, V + 2, clamp=1),
+                   vop3("v_fma_f16", 10, V + 1, V + 2, V + 4), vop3("v_fma_f16", 10, V + 1, V + 2, V + 4, op_sel=0b0100),
+                   vop3("v_fma_f16", 10, V + 1, V + 2, V + 4, neg=0b100), vop3("v_fmac_f16", 10, V + 1, V + 2),
+                   (*vop3("v_fmamk_f16", 10, LITERAL, V + 2), 0x0000_4000),
+                   vop3("v_cvt_f16_f32", 10, V + 5, neg=0b001, op_sel=0b1000),
+                   vop3("v_cvt_f32_f16", 10, V + 1, op_sel=0b0001),
+                   vop3("v_ldexp_f16", 10, V + 1, V + 2, op_sel=0b0010), vop3("v_ldexp_f16", 10, V + 1, const(3)),
+                   (*vop3("v_add_f16", 10, V + 1, LITERAL), 0x1234_3800),
+                   vop3("v_add_f16", 10, V + 1, const(0)), vop3("v_fma_f16", 10, V + 1, V + 2, const(0))]  # x + 0, x × y + 0
+    expected, actual = compare(with_lane_offset(*LOADS, *into_v10(*operations)), memory=image())
     assert actual == expected

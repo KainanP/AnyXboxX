@@ -170,6 +170,8 @@ def modified(code, index, fields, literal, is_float):
 
 
 def _vop3(name, opcode, fields, literal, active=ACTIVE):
+    if name in rdna2_hlsl_f16.TEMPLATES:
+        return rdna2_hlsl_f16.vop3(name, fields, literal, active)
     is_float = float_result(name)
     a, b, c = (modified(code, i, fields, literal, float_inputs(name)) for i, code in enumerate(fields.sources))
     if opcode < 0x100 and is_compare(name):

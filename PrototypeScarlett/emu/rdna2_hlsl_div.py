@@ -6,13 +6,20 @@ sur les bits, ou en double, où les valeurs f32 et leurs produits restent normau
 produit exact en double, somme arrondie « à l'impair » (erreur de TwoSum) puis arrondie au plus près
 en f32 par F64ToF32 : un seul arrondi effectif, dénormaux compris, comme l'interpréteur.
 v_div_fmas_f64 reste nommée par Untranslatable : quand VCC divise par 2^128, le résultat est
-dénormal et le fma HLSL l'arrondirait deux fois.
+dénormal et le fma HLSL l'arrondirait deux fois. v_div_scale_f64 aussi (UNTRANSLATED_REASONS).
 """
 from emu.rdna2_exec_div import OPERATIONS
 from emu.rdna2_hlsl_ops import Untranslatable, scalar_target, source
 from emu.rdna2_hlsl_wide import _words
 
 TRANSLATED = frozenset({"v_div_scale_f32", "v_div_fmas_f32", "v_div_fixup_f32", "v_div_fixup_f64"})
+UNTRANSLATED_REASONS = {
+    "v_div_fmas_f64": "arrondi d'un résultat dénormal f64",
+    # L'interpréteur refuse la branche « 1/S1 dénormal » (|S1| > 2^1022) : pas de référence pour le GPU,
+    # qui ne peut pas refuser une valeur à l'exécution ; et « S2/S1 dénormal » demande une comparaison
+    # exacte de produits de 106 bits, sans type plus large que le double en HLSL.
+    "v_div_scale_f64": "branche « 1/S1 dénormal » sans référence, test du quotient dénormal au-delà du double",
+}
 SIGN = "0x80000000u"
 
 HELPERS = """double F32ToF64(uint a) {
@@ -130,7 +137,7 @@ def _f64(code, index, abs_bits, neg_bits):
 def statements(name, fields, literal, active):
     """Instructions HLSL d'une instruction de division (encodage VOP3)."""
     if name not in TRANSLATED:
-        raise Untranslatable(f"non traduite en HLSL : {name} (arrondi d'un résultat dénormal f64)")
+        raise Untranslatable(f"non traduite en HLSL : {name} ({UNTRANSLATED_REASONS[name]})")
     if fields.clamp or fields.omod:
         raise Untranslatable(f"non traduite en HLSL : {name} avec clamp/omod")
     vdst = fields.vdst

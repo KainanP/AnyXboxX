@@ -1,4 +1,4 @@
-"""Division IEEE de RDNA 2 dans l'interpréteur : v_div_scale_f32, v_div_fmas_f32/f64, v_div_fixup_f32/f64.
+"""Division IEEE de RDNA 2 dans l'interpréteur : v_div_scale_f32/f64, v_div_fmas_f32/f64, v_div_fixup_f32/f64.
 
 Les compilateurs (LLVM : SIISelLowering, lowerFDIV32/FDIV64) divisent n / d en quatre temps :
 v_div_scale met d et n à l'échelle (et pose VCC s'il faudra corriger le quotient), v_rcp et des
@@ -17,9 +17,9 @@ RDNA 2 :
   sans effet sur la division : le NaN traverse v_div_fmas et v_div_fixup traite 0) ;
 - v_div_scale, branche « 1/S1 dénormal » : en f32 elle compare à un dénormal f64 et n'est jamais
   prise (lecture littérale) ; en f64, la branche combinée multiplie un dénominateur déjà proche du
-  maximum par 2^128 (dépassement) : elle lève Untranslated. v_div_scale_f64 (VOP3 0x16E), absente
-  des tests d'encodage gfx10 de LLVM, est décodée depuis VOP3Instructions.td (tools/rdna2_mnemonics.py)
-  mais pas encore exécutée ;
+  maximum par 2^128 (dépassement) : la branche entière (|S1| > 2^1022, fini) lève Untranslated, la
+  branche seule (S0 × 2^-128) comprise. v_div_scale_f64 (VOP3 0x16E) suit sinon le code f32 avec les
+  constantes f64 du pseudo-code (écart 768, échelle 2^128, numérateur minuscule si exposant ≤ 53) ;
 - v_div_fixup : S0 NaN donne ±infini (CLRX et tinygrad ; absent du pseudo-code) ; UNDERFLOW = ±0,
   seule valeur cohérente avec l'arrondi au plus près sous la condition exposant(S2) - exposant(S1) < -150.
 Les dénormaux sont conservés (mode IEEE, celui où LLVM émet cette séquence) ; clamp et omod lèvent
@@ -74,7 +74,7 @@ class Format:
 
 F32 = Format("f32", 32, 23, 127, 64, 96, 23, "<f")
 F64 = Format("f64", 64, 52, 1023, 128, 768, 53, "<d")
-OPERATIONS = {"v_div_scale_f32": F32, "v_div_fmas_f32": F32, "v_div_fmas_f64": F64,
+OPERATIONS = {"v_div_scale_f32": F32, "v_div_scale_f64": F64, "v_div_fmas_f32": F32, "v_div_fmas_f64": F64,
               "v_div_fixup_f32": F32, "v_div_fixup_f64": F64}
 INTEGER = {32: "<I", 64: "<Q"}
 

@@ -48,7 +48,7 @@ anyxboxx_dll(xgameruntime_cpp xgameruntime/xgameruntime.cpp xgameruntime/served_
              xgameruntime/platform_interface.cpp xgameruntime/gamer_picture.cpp
              xgameruntime/store_interface.cpp xgameruntime/streaming_interface.cpp
              xgameruntime/gameui_interface.cpp xgameruntime/gameui_requests.cpp
-             xgameruntime/accessibility_interface.cpp
+             xgameruntime/accessibility_interface.cpp xgameruntime/user_device_interface.cpp
              xgameruntime/xgameruntime.def)
 # Keep the oracle's DLL name (including its PE export directory) in a separate folder.
 set_target_properties(xgameruntime_cpp PROPERTIES OUTPUT_NAME xgameruntime

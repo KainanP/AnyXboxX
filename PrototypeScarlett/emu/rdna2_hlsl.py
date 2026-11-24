@@ -12,8 +12,8 @@ import struct
 import sys
 
 from emu import (rdna2, rdna2_exec_div, rdna2_exec_wide, rdna2_hlsl_div, rdna2_hlsl_dot, rdna2_hlsl_ext,
-                 rdna2_hlsl_format, rdna2_hlsl_image, rdna2_hlsl_movrel, rdna2_hlsl_sad, rdna2_hlsl_scalar64,
-                 rdna2_hlsl_wide)
+                 rdna2_hlsl_format, rdna2_hlsl_image, rdna2_hlsl_movrel, rdna2_hlsl_pc, rdna2_hlsl_sad,
+                 rdna2_hlsl_scalar64, rdna2_hlsl_wide)
 from emu.rdna2_exec_ops import signed
 from emu.rdna2_exec_ops import SIXTEEN_BIT_RESULTS, VECTOR_NO_OPERATION
 from emu.rdna2_exec_vop3 import MAD64, Fields, float_inputs, float_result
@@ -226,6 +226,8 @@ def statements(data, instruction, finish="return;", special=None, active=ACTIVE)
     if family == "SOP1" and name in rdna2_hlsl_movrel.SCALAR:
         return rdna2_hlsl_movrel.scalar(name, _fields(family, first), _literal(data, instruction, 1))
     if family in SCALAR_FAMILIES:
+        if name in rdna2_hlsl_pc.NAMES:
+            return rdna2_hlsl_pc.statements(name, _fields(family, first), instruction)
         if name in rdna2_hlsl_scalar64.SCALAR64:
             return [rdna2_hlsl_scalar64.statement(name, _fields(family, first))]
         if name not in SCALAR:
@@ -373,7 +375,7 @@ def coverage_names():
     return (set(SCALAR) | set(VECTOR) | set(BRANCHES) | set(CARRY) | VECTOR_NO_OPERATION | MAD64
             | set(rdna2_hlsl_scalar64.SCALAR64)
             | rdna2_hlsl_wide.TRANSLATED | rdna2_hlsl_div.TRANSLATED | rdna2_hlsl_movrel.TRANSLATED
-            | rdna2_hlsl_dot.TRANSLATED | rdna2_hlsl_sad.TRANSLATED
+            | rdna2_hlsl_dot.TRANSLATED | rdna2_hlsl_sad.TRANSLATED | rdna2_hlsl_pc.TRANSLATED
             | {"s_endpgm", "v_readlane_b32", "v_writelane_b32", "v_readfirstlane_b32"})
 
 

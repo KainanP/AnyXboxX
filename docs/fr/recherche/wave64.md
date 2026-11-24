@@ -61,7 +61,8 @@ Trois façons d'exécuter un programme de 64 lignes là où le wave matériel en
    `docs/wave64-on-wave32.md`, lue comme conception seulement : GPL-2.0-only ; mode `Wave32` de la PR #189 de
    VIctory). Rapide, mais suppose que les threads `32k..32k+31` d'un groupe tombent dans un même wave matériel, dans
    l'ordre des lignes, ce que D3D12 ne garantit pas (la PR #117 a vu NVIDIA regrouper les pixels de deux triangles
-   dans un même warp ; les waves de WARP peuvent faire 4 lignes) : chaque opération entre lignes demanderait de
+   dans un même warp ; mesuré : WARP exécute un groupe de 64 threads en 16 waves de 4 lignes) : chaque opération
+   entre lignes demanderait de
    toute façon un test `WaveGetLaneCount()` à l'exécution et une solution de repli.
 3. **Un groupe de 64 threads est le wave virtuel** (mode `Emulate` de la PR #189 de VIctory, GPL-3.0-or-later).
    La ligne `n` est le thread de `SV_GroupIndex = n` ; les masques de lignes sont construits en mémoire
@@ -87,15 +88,26 @@ mots du masque, `ReadLane64` avec `& 63`. Les instructions scalaires 64 bits (`s
 
 ## Pris en charge en wave64, et refusé
 
-Traduit en wave64 (vérifié contre l'interpréteur sur GPU) : ALU scalaire et opérations de masque 64 bits,
-branchements, ALU ligne à ligne VOP1/VOP2/VOP3 et opérations 64 bits, comparaisons vers VCC, EXEC ou une paire de
-SGPR, retenues, `v_cndmask_b32`, `v_mad_u64_u32`, `v_readlane_b32`, `v_readfirstlane_b32`, `v_writelane_b32`,
-`v_mbcnt_lo/hi_u32_b32`, `ds_bpermute_b32` (par moitié), LDS, mémoire globale, buffer, scalaire et image.
+Traduit en wave64 et vérifié au bit près contre l'interpréteur (`tests/test_rdna2_hlsl_wave64.py`) : opérations
+scalaires 64 bits sur les masques (`s_and_saveexec_b64`, `s_andn2_b64`, `s_or_b64`, `s_mov_b64`, `s_bcnt1_i32_b64`,
+`s_ff1_i32_b64`, `s_xor_b64`, `s_cmp_lg_u64`), boucles et if/else par `s_cbranch_execz`/`vccnz`, comparaisons vers
+VCC, EXEC (`v_cmpx`) ou une paire de SGPR, un ballot dont le masque couvre les deux moitiés relu comme donnée,
+retenues VOP2 et VOP3, `v_cndmask_b32` (VOP2 et VOP3), `v_mad_u64_u32`, `v_readlane_b32`, `v_readfirstlane_b32`,
+`v_writelane_b32`, `v_mbcnt_lo/hi_u32_b32`, `ds_bpermute_b32` (par moitié), LDS et mémoire globale. Mesuré :
+identique sur une RTX 4060 Laptop GPU, dont `WaveGetLaneCount()` vaut 32 (les threads 32-63 du groupe sont les
+lignes 0-31 d'un second warp), et avec WARP (waves de 4 lignes). Les autres formes scalaires 64 bits (variantes
+`saveexec`/`wrexec`, `s_not_b64`, `s_nor_b64`, `s_bcnt0`, `s_ff0`, `s_cmov_b64`, `s_cmp_eq_u64`) sont vérifiées de
+la même façon dans un programme wave32.
+
+Délégué sans changement à la traduction wave32, avec `LANE_ON` comme test d'activité : toute autre instruction ALU
+ligne à ligne, 64 bits ou mémoire (chargements buffer, scalaires et image compris) ; elles ne dépendent pas de la
+taille du wave.
 
 Refusé par `Untranslatable` en nommant l'instruction : DPP16/DPP8 (entre lignes, pas encore écrit pour 64 lignes),
 comparaisons SDWA et `v_cndmask_b32` SDWA (masques de 32 bits), `v_mad_i64_i32` avec retenue (déjà refusé en
 wave32), et toute instruction dont la traduction wave32 lit directement EXEC ou VCC ou échange entre lignes hors
 de la liste ci-dessus : le traducteur wave64 relit le texte qu'il délègue au code wave32 et refuse tout ce qui
-touche encore `s[106]`, `s[126]`, `Ballot`, `ReadLane` ou `lane`.
+lit encore `s[106]`/`s[126]` bit à bit ou utilise `Ballot`, `ReadLane` ou `lane` (lire VCC ou EXEC comme une
+valeur, par exemple `v_mov_b32 v1, vcc_lo`, reste permis).
 
 Non couvert : la taille du wave n'est pas encore lue dans l'état de dispatch ; l'appelant passe `wave_size=64`.

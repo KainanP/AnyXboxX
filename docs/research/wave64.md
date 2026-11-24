@@ -56,7 +56,8 @@ Three ways to run a 64-lane program where the hardware wave has 32 lanes:
 2. **Two halves on two 32-lane hardware waves** (xcl's approach, described in their `docs/wave64-on-wave32.md`,
    read as a design only: GPL-2.0-only; VIctory PR #189 mode `Wave32`). Fast, but it relies on threads
    `32k..32k+31` of a group landing in one hardware wave in lane order, which D3D12 does not guarantee (PR #117
-   found NVIDIA packing pixels of two triangles in one warp; WARP's waves can be 4 lanes), so every cross-lane
+   found NVIDIA packing pixels of two triangles in one warp; measured: WARP runs a 64-thread group as 16 waves of
+   4 lanes), so every cross-lane
    operation would need a runtime `WaveGetLaneCount()` check and a fallback anyway.
 3. **One thread group of 64 threads is the virtual wave** (VIctory PR #189 mode `Emulate`, GPL-3.0-or-later).
    Lane `n` is the thread with `SV_GroupIndex = n`; lane masks are built in `groupshared` memory with
@@ -80,15 +81,24 @@ mask words, `ReadLane64` with `& 63`. The 64-bit scalar instructions (`s_mov_b64
 
 ## Supported in wave64 and refused
 
-Translated in wave64 (checked against the interpreter on GPU): scalar ALU and 64-bit mask operations, branches,
-VOP1/VOP2/VOP3 lane-wise ALU and 64-bit operations, compares into VCC, EXEC or an SGPR pair, carries, `v_cndmask_b32`,
-`v_mad_u64_u32`, `v_readlane_b32`, `v_readfirstlane_b32`, `v_writelane_b32`, `v_mbcnt_lo/hi_u32_b32`,
-`ds_bpermute_b32` (half-wave), LDS, global, buffer, scalar and image memory.
+Translated in wave64 and checked byte for byte against the interpreter (`tests/test_rdna2_hlsl_wave64.py`):
+64-bit scalar mask operations (`s_and_saveexec_b64`, `s_andn2_b64`, `s_or_b64`, `s_mov_b64`, `s_bcnt1_i32_b64`,
+`s_ff1_i32_b64`, `s_xor_b64`, `s_cmp_lg_u64`), `s_cbranch_execz`/`vccnz` loops and if/else, compares into VCC, EXEC
+(`v_cmpx`) or an SGPR pair, a ballot whose mask spans both halves read back as data, VOP2 and VOP3 carries,
+`v_cndmask_b32` (VOP2 and VOP3), `v_mad_u64_u32`, `v_readlane_b32`, `v_readfirstlane_b32`, `v_writelane_b32`,
+`v_mbcnt_lo/hi_u32_b32`, `ds_bpermute_b32` (half-wave), LDS and global memory. Measured: identical on an RTX 4060
+Laptop GPU, whose `WaveGetLaneCount()` is 32 (threads 32-63 of the group are lanes 0-31 of a second warp), and with
+WARP (4-lane waves). The remaining 64-bit scalar forms (`saveexec`/`wrexec` variants, `s_not_b64`, `s_nor_b64`,
+`s_bcnt0`, `s_ff0`, `s_cmov_b64`, `s_cmp_eq_u64`) are checked the same way in a wave32 program.
+
+Delegated unchanged to the wave32 translation, with `LANE_ON` as the activity test: every other lane-wise ALU,
+64-bit and memory instruction (buffer, scalar and image loads included); they do not depend on the wave size.
 
 Refused with `Untranslatable` naming the instruction: DPP16/DPP8 (cross-lane, not yet written for 64 lanes),
 SDWA compares and SDWA `v_cndmask_b32` (32-bit masks), `v_mad_i64_i32` with a carry (already refused in wave32),
 and any instruction whose wave32 translation reads EXEC or VCC directly or does a lane exchange that is not in
 the list above: the wave64 translator checks the text it delegates to the wave32 code and refuses anything that
-still touches `s[106]`, `s[126]`, `Ballot`, `ReadLane` or `lane`.
+still reads `s[106]`/`s[126]` bit by bit or uses `Ballot`, `ReadLane` or `lane` (reading VCC or EXEC as a value,
+such as `v_mov_b32 v1, vcc_lo`, stays allowed).
 
 Not covered: the wave size is not read from the dispatch state yet; callers pass `wave_size=64`.

@@ -167,9 +167,13 @@ def _carry(wave, name, fields, literal):
     Architecture », novembre 2020, section 3.9 « Vector Compares: VCC and VCCZ » (p. 19-20) :
     « The VCC indicates which executing threads passed the conditional test, or which threads
     generated a carry-out from an integer add or subtract » et « VCC is fully written; there are no
-    partial mask updates ». Le texte vaut pour VCC, donc pour cette forme VOP2 ; il n'est pas
-    vérifié sur matériel. (PDF archivé : web.archive.org, capture 20230214072857 de
+    partial mask updates ». (PDF archivé : web.archive.org, capture 20230214072857 de
     developer.amd.com/wp-content/resources/RDNA2_Shader_ISA_November2020.pdf, SHA-256 22aec03f…4795.)
+
+    Mesuré sur RDNA 2 par Lyrnc (iGPU gfx1036, Wave32, pilote AMD 32.0.21042.62, 3 essais sur 3) sur
+    le cas de la revue de #133 : EXEC = 1, retenue préchargée à 0xFFFFFFFE → 0x00000001 pour
+    v_add_co_ci_u32 en VOP2 (VCC) et en VOP3 (SGPR) ; github.com/akimfomin/PortBridge/issues/19
+    (commentaire 7136020663). Portée : ces deux additions, en Wave32, sur gfx1036.
     """
     carries = 0
     for lane in wave.active():

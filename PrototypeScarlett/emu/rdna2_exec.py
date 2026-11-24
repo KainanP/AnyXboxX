@@ -1,6 +1,6 @@
-"""Interpréteur de référence RDNA 2 (wave32) : première brique du recompilateur de shaders.
+"""Interpréteur de référence RDNA 2 (wave32, ou wave64 sur demande) : première brique du recompilateur.
 
-Il exécute un programme RDNA 2 sur 32 lignes : registres scalaires (SGPR, VCC, EXEC, M0),
+Il exécute un programme RDNA 2 sur 32 lignes (64 avec `Wave(lanes=64)`, EXEC et VCC sur deux SGPR) : registres scalaires (SGPR, VCC, EXEC, M0),
 registres vectoriels (VGPR), SCC et branchements. Le futur recompilateur RDNA 2 → DXIL
 sera validé contre lui. La sémantique suit la documentation publique d'AMD (« RDNA 2
 Instruction Set Architecture ») ; les instructions non encore décrites lèvent une erreur
@@ -13,6 +13,7 @@ from emu import (rdna2, rdna2_exec_cmp64, rdna2_exec_ext, rdna2_exec_graphics, r
 from emu.rdna2_exec_ops import SCALAR, VECTOR, VECTOR_COMPARE, VECTOR_NO_OPERATION, BRANCHES, float_bits
 
 LANES = 32
+WAVE_SIZES = (32, 64)
 FULL = (1 << LANES) - 1
 MASK32 = 0xFFFF_FFFF
 SCALAR_REGISTERS = 128              # s0-s105, vcc, ttmp, m0, null, exec
@@ -30,35 +31,53 @@ class Untranslated(NotImplementedError):
 
 
 class Wave:
-    """État d'un wave32. `v[n][ligne]` : VGPR ; `s[n]` : registres scalaires 32 bits."""
+    """État d'un wave32 ou wave64. `v[n][ligne]` : VGPR ; `s[n]` : registres scalaires 32 bits.
 
-    def __init__(self, memory=None):
+    En wave64, EXEC et VCC occupent deux SGPR (exec_hi = s127, vcc_hi = s107) et un masque de lignes
+    écrit dans un SGPR en occupe deux (documentation RDNA 2 d'AMD, chapitre 3)."""
+
+    def __init__(self, memory=None, lanes=LANES):
+        if lanes not in WAVE_SIZES:
+            raise ValueError(f"taille de wave non prise en charge : {lanes} (32 ou 64)")
+        self.lanes = lanes
+        self.mask_width = lanes // 32               # SGPR par masque de lignes
         self.memory = memory if memory is not None else rdna2_exec_memory.Memory()
         self.lds = bytearray(rdna2_exec_memory.LDS_SIZE)
         self.steps = 0
         self.s = [0] * SCALAR_REGISTERS
-        self.v = [[0] * LANES for _ in range(VGPR_FIRST)]
-        self.s[EXEC_LO] = FULL
-        self.v[0] = list(range(LANES))     # v0 : numéro de ligne, comme un shader de calcul
+        self.v = [[0] * lanes for _ in range(VGPR_FIRST)]
+        self.write_mask(EXEC_LO, (1 << lanes) - 1)
+        self.v[0] = list(range(lanes))     # v0 : numéro de ligne, comme un shader de calcul
         self.scc = False
         self.pc = 0
 
     @property
     def exec(self):
-        return self.s[EXEC_LO]
+        return self.read_mask(EXEC_LO)
 
     @property
     def vcc(self):
-        return self.s[VCC_LO]
+        return self.read_mask(VCC_LO)
 
     def active(self):
-        return [lane for lane in range(LANES) if self.exec >> lane & 1]
+        mask = self.exec
+        return [lane for lane in range(self.lanes) if mask >> lane & 1]
+
+    def read_mask(self, code, literal=None):
+        """Masque de lignes lu dans un SGPR (wave32) ou une paire de SGPR (wave64)."""
+        return self.read_scalar(code, literal, self.mask_width)
+
+    def write_mask(self, code, mask):
+        """Écrit un masque de lignes : un SGPR en wave32, une paire en wave64."""
+        self.write_scalar(code, mask, self.mask_width)
 
     def read_scalar(self, code, literal, width=1):
         if code == LITERAL:
             return literal
+        if code == NULL:
+            return 0
         if code < SCALAR_REGISTERS:
-            low = 0 if code == NULL else self.s[code]
+            low = self.s[code]
             return low | (self.s[code + 1] << 32 if width == 2 and code + 1 < SCALAR_REGISTERS else 0)
         if 128 <= code <= 192:
             return code - 128
@@ -194,7 +213,7 @@ def _carry(wave, name, fields, literal):
         result, carry = rdna2_exec_vop3.CARRY[name](a, b, wave.vcc >> lane & 1)
         wave.v[fields["vdst"]][lane] = result & MASK32
         carries |= bool(carry) << lane
-    wave.s[VCC_LO] = carries
+    wave.write_mask(VCC_LO, carries)
 
 
 def _compare(wave, name, fields, literal):
@@ -203,7 +222,7 @@ def _compare(wave, name, fields, literal):
     for lane in wave.active():
         if test(wave.read_lane(fields["src0"], lane, literal), wave.v[fields["vsrc1"]][lane]):
             mask |= 1 << lane
-    wave.s[EXEC_LO if writes_exec else VCC_LO] = mask
+    wave.write_mask(EXEC_LO if writes_exec else VCC_LO, mask)
 
 
 def run(data, wave=None, max_steps=MAX_STEPS):

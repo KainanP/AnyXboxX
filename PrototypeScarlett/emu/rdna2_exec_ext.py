@@ -127,11 +127,11 @@ def _exec_sdwa(wave, family, name, fields, ext):
             if test(a, b):
                 mask |= 1 << lane
         if writes_exec:
-            wave.s[126] = mask
+            wave.write_mask(126, mask)
         elif (ext >> 15) & 1:
-            wave.write_scalar((ext >> 8) & 0x7F, mask)
+            wave.write_mask((ext >> 8) & 0x7F, mask)
         else:
-            wave.s[106] = mask
+            wave.write_mask(106, mask)
         return
 
     operation = VECTOR[name]

@@ -11,7 +11,9 @@ dans la spécification XML RDNA 2) :
 - ds_permute_b32 : chaque ligne active i écrit sa donnée dans la ligne ((ADDR + offset) / 4) % 32 ;
   à destination commune, la ligne de plus grand numéro l'emporte ; une ligne que personne ne vise
   reçoit 0.
-Seules les lignes actives écrivent VDST. Les modes ROTATE et FFT (offset ≥ 0xC000) lèvent
+En wave64, chaque moitié de 32 lignes échange seule (GFX10 : Mesa ACO émule une permutation sur
+64 lignes, « emulate full-wave bpermute » ; lu statiquement, non mesuré). Seules les lignes actives
+écrivent VDST. Les modes ROTATE et FFT (offset ≥ 0xC000) lèvent
 Untranslated : leur pseudo-code ne dit ni comment l'indice reste dans le groupe de 32 lignes, ni
 sur combien de bits reverse_bits opère. Les autres offsets (0x8100 à 0xBFFF) sont réservés.
 """
@@ -42,21 +44,26 @@ def swizzle_source(offset, lane):
     raise _untranslated(f"ds_swizzle_b32 : offset réservé 0x{offset:04X}")
 
 
+def _half(lane):
+    """Première ligne de la moitié de 32 lignes qui contient `lane` (0 en wave32)."""
+    return lane & ~(LANES - 1)
+
+
 def _target(wave, addr, lane, offset):
-    return (wave.v[addr][lane] + offset) // DWORD % LANES
+    return _half(lane) | (wave.v[addr][lane] + offset) // DWORD % LANES
 
 
 def execute(wave, name, addr, data0, vdst, offset):
     """Exécute ds_swizzle_b32, ds_permute_b32 ou ds_bpermute_b32."""
-    active = wave.active()
-    source = [wave.v[data0][lane] if lane in active else 0 for lane in range(LANES)]
+    active = set(wave.active())
+    source = [wave.v[data0][lane] if lane in active else 0 for lane in range(wave.lanes)]
     if name == "ds_swizzle_b32":
-        result = {lane: source[swizzle_source(offset, lane)] for lane in active}
+        result = {lane: source[_half(lane) | swizzle_source(offset, lane % LANES)] for lane in active}
     elif name == "ds_bpermute_b32":
         result = {lane: source[_target(wave, addr, lane, offset)] for lane in active}
     else:
-        forwarded = [0] * LANES
-        for lane in active:                     # ordre croissant : la plus grande ligne gagne
+        forwarded = [0] * wave.lanes
+        for lane in sorted(active):             # ordre croissant : la plus grande ligne gagne
             forwarded[_target(wave, addr, lane, offset)] = source[lane]
         result = {lane: forwarded[lane] for lane in active}
     for lane, value in result.items():

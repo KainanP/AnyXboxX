@@ -11,7 +11,7 @@ documentation publique d'AMD (« RDNA 2 Instruction Set Architecture », VOPC).
 """
 import struct
 
-from emu.rdna2_exec_ops import FLOAT_TESTS, INTEGER_TESTS, MASK32, MASK64, signed
+from emu.rdna2_exec_ops import FLOAT_TESTS, INTEGER_TESTS, MASK64, signed
 
 VGPR_FIRST, LITERAL, EXEC_LO, VCC_LO = 256, 255, 126, 106
 INLINE_INTEGERS = range(128, 209)
@@ -118,7 +118,4 @@ def execute(wave, name, codes, literal, destination=VCC_LO, abs_bits=0, neg_bits
         a, b = _sources(wave, kind, codes, lane, literal)
         a, b = _modify(a, 0, kind, abs_bits, neg_bits), _modify(b, 1, kind, abs_bits, neg_bits)
         mask |= bool(test(a, b)) << lane
-    if writes_exec:
-        wave.s[EXEC_LO] = mask & MASK32
-    else:
-        wave.write_scalar(destination, mask)
+    wave.write_mask(EXEC_LO if writes_exec else destination, mask)

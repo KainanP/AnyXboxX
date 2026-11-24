@@ -221,7 +221,7 @@ def execute(wave, name, opcode, word, literal):
     for lane in wave.active():
         a, b, c = _inputs(wave, fields, lane, literal, float_inputs(name))
         if is_vop1 or is_vop2:
-            condition = c >> lane & 1 if name == "v_cndmask_b32" else 0
+            condition = wave.read_mask(fields.sources[2], literal) >> lane & 1 if name == "v_cndmask_b32" else 0
             result = VECTOR[name](a, b if is_vop2 else 0, destination[lane], literal, condition)
         else:
             result = VECTOR3[name](a, b, c)
@@ -235,10 +235,7 @@ def _compare(wave, name, fields, literal):
     for lane in wave.active():
         a, b, _ = _inputs(wave, fields, lane, literal, name.endswith("_f32"))
         mask |= bool(test(a, b)) << lane
-    if writes_exec:
-        wave.s[EXEC_LO] = mask
-    else:
-        wave.write_scalar(fields.vdst, mask)
+    wave.write_mask(EXEC_LO if writes_exec else fields.vdst, mask)
 
 
 def _carry(wave, name, fields, literal):
@@ -250,12 +247,13 @@ def _carry(wave, name, fields, literal):
     les bits des lignes inactives de son SGPR (mesure et portée citées dans rdna2_exec._carry).
     """
     carries = 0
+    carry_in = wave.read_mask(fields.sources[2], literal) if name.endswith("_ci_u32") else 0
     for lane in wave.active():
-        a, b, c = _inputs(wave, fields, lane, literal, False)
-        result, carry = CARRY[name](a, b, c >> lane & 1 if name.endswith("_ci_u32") else 0)
+        a, b, _ = _inputs(wave, fields, lane, literal, False)
+        result, carry = CARRY[name](a, b, carry_in >> lane & 1)
         wave.v[fields.vdst][lane] = result & MASK32
         carries |= bool(carry) << lane
-    wave.write_scalar(fields.sdst, carries)
+    wave.write_mask(fields.sdst, carries)
 
 
 def _mad64(wave, name, fields, literal):
@@ -274,7 +272,7 @@ def _mad64(wave, name, fields, literal):
         wave.v[fields.vdst][lane] = total & MASK32
         wave.v[fields.vdst + 1][lane] = total >> 32 & MASK32
         carries |= (not is_signed and total >> 64 != 0) << lane
-    wave.write_scalar(fields.sdst, carries)
+    wave.write_mask(fields.sdst, carries)
 
 
 def _lane_operation(wave, name, fields, literal):
@@ -282,14 +280,16 @@ def _lane_operation(wave, name, fields, literal):
     if name == "v_readfirstlane_b32":
         lanes = wave.active() or [0]
         wave.write_scalar(fields.vdst, wave.read_lane(src0, lanes[0], literal))
-    elif name == "v_readlane_b32":
-        lane = wave.read_scalar(src1, literal) & 31
+    elif name == "v_readlane_b32":                    # ligne : SSRC1[4:0] en wave32, [5:0] en wave64
+        lane = wave.read_scalar(src1, literal) & (wave.lanes - 1)
         wave.write_scalar(fields.vdst, wave.read_lane(src0, lane, literal))
     elif name == "v_writelane_b32":
-        lane = wave.read_scalar(src1, literal) & 31
+        lane = wave.read_scalar(src1, literal) & (wave.lanes - 1)
         wave.v[fields.vdst][lane] = wave.read_scalar(src0, literal)
     else:
+        # ThreadMask = (1 << ligne) - 1 : mbcnt_lo compte S0 & ThreadMask[31:0], mbcnt_hi S0 & ThreadMask[63:32].
         for lane in wave.active():
-            mask = wave.read_lane(src0, lane, literal)
-            below = mask & ((1 << lane) - 1) if name == "v_mbcnt_lo_u32_b32" else 0
-            wave.v[fields.vdst][lane] = (bin(below).count("1") + wave.read_lane(src1, lane, literal)) & MASK32
+            below = (1 << lane) - 1
+            below = below & MASK32 if name == "v_mbcnt_lo_u32_b32" else below >> 32
+            count = bin(wave.read_lane(src0, lane, literal) & below).count("1")
+            wave.v[fields.vdst][lane] = (count + wave.read_lane(src1, lane, literal)) & MASK32

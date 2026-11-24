@@ -11,8 +11,8 @@ from pathlib import Path
 import struct
 import sys
 
-from emu import (rdna2, rdna2_exec_div, rdna2_exec_wide, rdna2_hlsl_div, rdna2_hlsl_ext, rdna2_hlsl_image,
-                 rdna2_hlsl_movrel, rdna2_hlsl_scalar64, rdna2_hlsl_wide)
+from emu import (rdna2, rdna2_exec_div, rdna2_exec_wide, rdna2_hlsl_div, rdna2_hlsl_ext, rdna2_hlsl_format,
+                 rdna2_hlsl_image, rdna2_hlsl_movrel, rdna2_hlsl_scalar64, rdna2_hlsl_wide)
 from emu.rdna2_exec_ops import signed
 from emu.rdna2_exec_ops import SIXTEEN_BIT_RESULTS, VECTOR_NO_OPERATION
 from emu.rdna2_exec_vop3 import MAD64, Fields, float_inputs, float_result
@@ -24,7 +24,7 @@ from emu.rdna2_operands import FIELDS
 
 ACTIVE = "((s[126] >> lane) & 1u) != 0"
 SCALAR_FAMILIES = ("SOP1", "SOP2", "SOPC", "SOPK", "SOPP")
-MEMORY_FAMILIES = ("SMEM", "DS", "MUBUF", "FLAT", "GLOBAL", "SCRATCH")
+MEMORY_FAMILIES = ("SMEM", "DS", "MUBUF", "MTBUF", "FLAT", "GLOBAL", "SCRATCH")
 CARRY = {
     "v_add_co_u32": ("x + y", "r < x"),
     "v_sub_co_u32": ("x - y", "x < y"),
@@ -265,7 +265,8 @@ def translate(data, sgprs=None, wave_size=32):
     if wave_size == 64:
         from emu import rdna2_hlsl_wave64
         return rdna2_hlsl_wave64.translate(data, sgprs)
-    helpers = "\n".join((ALU_HELPERS, rdna2_hlsl_wide.HELPERS, rdna2_hlsl_div.HELPERS, rdna2_hlsl_image.HELPERS))
+    helpers = "\n".join((ALU_HELPERS, rdna2_hlsl_wide.HELPERS, rdna2_hlsl_div.HELPERS, rdna2_hlsl_image.HELPERS,
+                         rdna2_hlsl_format.HELPERS))
     prelude = PRELUDE.replace("[numthreads", helpers + "\n[numthreads", 1)
     return "\n".join([prelude.rstrip("\n"), *body(data, sgprs), "}", ""])
 

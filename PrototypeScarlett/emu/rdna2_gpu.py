@@ -42,6 +42,23 @@ def find_runner():
     return runner if runner.is_file() else None
 
 
+def adapter():
+    """Champs de `anyxboxx_gpu_run.exe --adaptateur` pour l'adaptateur choisi par ANYXBOXX_GPU."""
+    runner = find_runner()
+    if runner is None:
+        raise GpuUnavailable("anyxboxx_gpu_run.exe introuvable : compilez runtime/ avec CMake")
+    result = subprocess.run([str(runner), "--adaptateur"], capture_output=True, encoding="utf-8",
+                            errors="replace", timeout=TIMEOUT)
+    if result.returncode != 0:
+        raise GpuUnavailable(f"adaptateur introuvable :\n{result.stderr}")
+    return dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+
+
+def supports_doubles():
+    """Vrai si l'adaptateur exécute des doubles dans les shaders (certains GPU intégrés ne le font pas)."""
+    return adapter().get("double_precision") == "oui"
+
+
 def available():
     return find_dxc() is not None and find_runner() is not None
 

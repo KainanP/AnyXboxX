@@ -158,6 +158,7 @@ $report.Add("- Adaptateur : $($fields.adapter) (vendor=$($fields.vendor) device=
 $report.Add("- Pilote : $($fields.driver)")
 $report.Add("- Largeur de wave native : $($fields.native_lane_range)")
 $report.Add("- Ray tracing (DXR) : $($fields.raytracing_tier)")
+$report.Add("- Double précision dans les shaders : $($fields.double_precision)")
 $report.Add('')
 $report.Add('| Test | Résultat |')
 $report.Add('|---|---|')

@@ -110,6 +110,10 @@ void Describe(IDXGIAdapter1* adapter, ID3D12Device* device) {
   } else {
     std::printf("raytracing_tier=%d.%d\n", tier / 10, tier % 10);
   }
+  // Doubles dans les shaders : absents sur certains GPU intégrés (Intel UHD), qui refusent alors le DXIL.
+  D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
+  device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, static_cast<UINT>(sizeof options));
+  std::printf("double_precision=%s\n", options.DoublePrecisionFloatShaderOps ? "oui" : "non");
 }
 
 }  // namespace

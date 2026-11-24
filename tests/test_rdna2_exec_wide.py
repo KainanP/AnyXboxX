@@ -154,6 +154,13 @@ def test_hlsl_translates_double_operations():
 
 @gpu
 def test_double_operations_match_interpreter_on_gpu():
+    if not rdna2_gpu.supports_doubles():                 # mesuré : Intel UHD (a78b) refuse le DXIL à doubles
+        pytest.skip("l'adaptateur n'exécute pas de doubles dans les shaders (double_precision=non)")
     expected, actual = compare(wide_program())
     assert actual == expected
+
+
+@gpu
+def test_adapter_reports_double_support():
+    assert rdna2_gpu.adapter()["double_precision"] in ("oui", "non")
 

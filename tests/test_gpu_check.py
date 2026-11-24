@@ -41,6 +41,7 @@ def test_adapter_flag_describes_warp(runtime_dir):
     assert lines[2] == "backend=warp"
     assert re.fullmatch(r"native_lane_range=\d+-\d+", lines[3])
     assert re.fullmatch(r"raytracing_tier=(\d\.\d|aucun)", lines[4])
+    assert lines[5] == "double_precision=oui"                       # WARP calcule les doubles
 
 
 def test_part_of_a_name_in_any_case_picks_that_adapter(runtime_dir):

@@ -149,8 +149,13 @@ def _logic(function, width=1):
 
 COMPARISONS = {"eq": lambda a, b: a == b, "lg": lambda a, b: a != b, "gt": lambda a, b: a > b,
                "ge": lambda a, b: a >= b, "lt": lambda a, b: a < b, "le": lambda a, b: a <= b}
+# Sans effet architectural dans ce modèle (wave séquentiel, sans cache ni compteur de performance) :
+# invalidation du cache d'instructions, compteurs de performance, trace, attentes sur les compteurs.
+SOPP_NO_EFFECT = ("s_icache_inv", "s_incperflevel", "s_decperflevel", "s_ttracedata_imm", "s_wait_idle",
+                  "s_waitcnt_depctr")
 NO_OPERATION = ("s_nop", "s_waitcnt", "s_barrier", "s_sleep", "s_setprio", "s_clause", "s_inst_prefetch",
-                "s_waitcnt_vscnt", "s_waitcnt_vmcnt", "s_waitcnt_expcnt", "s_waitcnt_lgkmcnt", "s_ttracedata")
+                "s_waitcnt_vscnt", "s_waitcnt_vmcnt", "s_waitcnt_expcnt", "s_waitcnt_lgkmcnt", "s_ttracedata",
+                *SOPP_NO_EFFECT)
 
 SCALAR = {
     "s_add_u32": _sop2(lambda a, b, w: (a + b, (a + b) >> 32 != 0)),

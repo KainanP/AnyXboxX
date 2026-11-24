@@ -8,7 +8,7 @@ référence emu/rdna2_exec*, contre lequel la traduction est vérifiée.
 """
 import re
 
-from emu.rdna2_exec_ops import float_bits, signed
+from emu.rdna2_exec_ops import SOPP_NO_EFFECT, float_bits, signed
 
 NULL, VCC, EXEC, OFF = 125, 106, 126, 0x7D
 INLINE_FLOATS = {240: 0.5, 241: -0.5, 242: 1.0, 243: -1.0, 244: 2.0, 245: -2.0, 246: 4.0, 247: -4.0,
@@ -272,7 +272,7 @@ for _op in ("andn1", "andn2"):
 for _name in ("s_nop", "s_waitcnt", "s_waitcnt_vscnt", "s_waitcnt_vmcnt", "s_waitcnt_expcnt",
               "s_waitcnt_lgkmcnt", "s_barrier", "s_sleep", "s_setprio", "s_ttracedata",
               "s_dcache_inv", "s_gl1_inv", "buffer_gl0_inv", "buffer_gl1_inv", "s_clause",
-              "s_inst_prefetch"):
+              "s_inst_prefetch", *SOPP_NO_EFFECT):
     SCALAR[_name] = ""
 COMPARE_OPERATORS = {"eq": "==", "lg": "!=", "ne": "!=", "neq": "!=", "gt": ">", "ge": ">=", "lt": "<", "le": "<="}
 for _op, _symbol in COMPARE_OPERATORS.items():

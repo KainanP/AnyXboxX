@@ -3,7 +3,7 @@ for VOP1, VOP2, and VOPC instructions in the reference interpreter (#21).
 
 Semantics follow AMD's public RDNA 2 ISA specification (sections 6.5 SDWA and 6.6 DPP).
 """
-from emu.rdna2_exec_ops import VECTOR, VECTOR_COMPARE, bits_float, float_bits
+from emu.rdna2_exec_ops import SIXTEEN_BIT_RESULTS, VECTOR, VECTOR_COMPARE, bits_float, float_bits
 from emu.rdna2_operands_ext import BOUND_CTRL_BIT, CLAMP_BIT, DPP8, DPP8_FI, DPP16, FI_BIT, OMOD_SHIFT, SDWA
 
 MASK32 = 0xFFFF_FFFF
@@ -104,6 +104,9 @@ def _dpp16_source_lane(lane, ctrl):
 
 def _exec_sdwa(wave, family, name, fields, ext):
     from emu.rdna2_exec import Untranslated
+
+    if name in SIXTEEN_BIT_RESULTS:
+        raise Untranslated(f"{name} en SDWA : résultat 16 bits sous dst_sel non vérifié")
 
     src_is_float, dst_is_float = _operand_float_flags(name)
     s0_code = ext & 0xFF

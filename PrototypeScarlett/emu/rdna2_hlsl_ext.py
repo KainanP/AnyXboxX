@@ -1,6 +1,7 @@
 """HLSL recompilation of RDNA 2 SDWA (0xF9), DPP16 (0xFA), and DPP8 (0xE9/0xEA)
 forms for VOP1, VOP2, and VOPC instructions (#21).
 """
+from emu.rdna2_exec_ops import SIXTEEN_BIT_RESULTS
 from emu.rdna2_hlsl_ops import VECTOR, Untranslatable, compare_condition, is_compare, scalar_target, source
 from emu.rdna2_operands_ext import BOUND_CTRL_BIT, CLAMP_BIT, DPP8, DPP8_FI, DPP16, FI_BIT, OMOD_SHIFT, SDWA
 
@@ -61,6 +62,8 @@ def _hlsl_place_dst(expr, old_expr, dst_sel, dst_unused):
 
 
 def _hlsl_sdwa(family, name, fields, ext, active):
+    if name in SIXTEEN_BIT_RESULTS:
+        raise Untranslatable(f"non traduite en HLSL (SDWA) : {name}, résultat 16 bits sous dst_sel non vérifié")
     src_is_float, dst_is_float = _operand_float_flags(name)
     s0_code, s0_scalar = ext & 0xFF, (ext >> 23) & 1
     s0_sel, s0_sext, s0_neg, s0_abs = (ext >> 16) & 7, (ext >> 19) & 1, (ext >> 20) & 1, (ext >> 21) & 1

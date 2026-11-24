@@ -8,8 +8,8 @@ Sémantique d'après la documentation publique d'AMD (« RDNA 2 Instruction Set 
 import math
 
 from emu import rdna2_exec_cmp64, rdna2_exec_div, rdna2_exec_movrel, rdna2_exec_wide
-from emu.rdna2_exec_ops import (MASK32, VECTOR, VECTOR_COMPARE, VECTOR_NO_OPERATION, _float_op, _fma,
-                                _legacy_fma, bits_float, float_bits, ldexp, signed)
+from emu.rdna2_exec_ops import (MASK32, SIXTEEN_BIT_RESULTS, VECTOR, VECTOR_COMPARE, VECTOR_NO_OPERATION,
+                                _float_op, _fma, _legacy_fma, bits_float, float_bits, ldexp, signed)
 
 SIGN = 0x8000_0000
 EXEC_LO = 126
@@ -162,6 +162,7 @@ class Fields:
         self.vdst = word & 0xFF                 # VGPR, ou SGPR pour les comparaisons et readlane
         self.sdst = (word >> 8) & 0x7F          # VOP3b : destination de la retenue
         self.abs = (word >> 8) & 0x7
+        self.op_sel = (word >> 11) & 0xF        # moitiés de 16 bits : sources 0-2, puis destination
         self.clamp = (word >> 15) & 1
         self.sources = ((word >> 32) & 0x1FF, (word >> 41) & 0x1FF, (word >> 50) & 0x1FF)
         self.omod = (word >> 59) & 0x3
@@ -214,6 +215,9 @@ def execute(wave, name, opcode, word, literal):
         return _compare(wave, name, fields, literal)
     if name in CARRY:
         return _carry(wave, name, fields, literal)
+    if name in SIXTEEN_BIT_RESULTS and (fields.op_sel or fields.clamp):
+        from emu.rdna2_exec import Untranslated
+        raise Untranslated(f"{name} avec op_sel/clamp (VOP3, résultat 16 bits)")
     is_vop1 = VOP1_START <= opcode < VOP1_END
     is_vop2 = VOP2_START <= opcode < VOP2_END
     is_float = float_result(name)

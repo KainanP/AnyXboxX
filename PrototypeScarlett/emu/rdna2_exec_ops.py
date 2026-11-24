@@ -268,6 +268,12 @@ def _round_to_int(bits, rounding):
     return _to_int(float(rounding(x)) if math.isfinite(x) else x, INT32_MIN, INT32_MAX)
 
 
+def _sat_pk_u8_i16(a, d):
+    """Les deux i16 de S0 saturés sur [0, 255], dans les octets 0 et 1 ; D[31:16] conservé."""
+    low, high = (min(max(signed(a >> shift & 0xFFFF, 16), 0), BYTE_MAX) for shift in (0, 16))
+    return d & 0xFFFF_0000 | high << 8 | low
+
+
 def _leading_signs(value):
     """Position (depuis le haut) du premier bit différent du signe ; -1 pour 0 et -1."""
     value = ~value & MASK32 if value >> 31 else value
@@ -341,7 +347,13 @@ VECTOR = {
     "v_fmac_legacy_f32": lambda a, b, d, k, c: _float_op(_legacy_fma)(F(a), F(b), F(d)),
     "v_madmk_f32": lambda a, b, d, k, c: _float_op(_fma)(F(a), F(k), F(b)),
     "v_madak_f32": lambda a, b, d, k, c: _float_op(_fma)(F(a), F(b), F(k)),
+    "v_sat_pk_u8_i16": lambda a, b, d, k, c: _sat_pk_u8_i16(a, d),
 }
+# Résultat de 16 bits (spécification XML RDNA 2 : destination OperandSize 16) : D[31:16] est conservé,
+# supposé d'après LLVM (GCNSubtarget::zeroesHigh16BitsOfDest : « On gfx10, all 16-bit instructions
+# preserve the high bits ») ; non mesuré. op_sel et clamp (VOP3) et SDWA lèvent Untranslated.
+SIXTEEN_BIT_RESULTS = frozenset({"v_sat_pk_u8_i16"})
+BYTE_MAX = 0xFF
 VECTOR_NO_OPERATION = frozenset({"v_nop", "v_pipeflush", "v_clrexcp"})
 
 # --- Comparaisons vectorielles : (test, écrit EXEC au lieu de VCC) -----------------------

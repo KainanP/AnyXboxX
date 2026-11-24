@@ -14,7 +14,7 @@ import sys
 from emu import (rdna2, rdna2_exec_div, rdna2_exec_wide, rdna2_hlsl_div, rdna2_hlsl_ext, rdna2_hlsl_image,
                  rdna2_hlsl_movrel, rdna2_hlsl_scalar64, rdna2_hlsl_wide)
 from emu.rdna2_exec_ops import signed
-from emu.rdna2_exec_ops import VECTOR_NO_OPERATION
+from emu.rdna2_exec_ops import SIXTEEN_BIT_RESULTS, VECTOR_NO_OPERATION
 from emu.rdna2_exec_vop3 import MAD64, Fields, float_inputs, float_result
 from emu.rdna2_hlsl_memory import memory_statements
 from emu.rdna2_hlsl_ops import (BRANCHES, HELPERS as ALU_HELPERS, SCALAR, VECTOR, Untranslatable, source_high,
@@ -197,7 +197,9 @@ def _vop3(name, opcode, fields, literal, active=ACTIVE):
         return [f"if (lane == ({b} & 31u)) v[{fields.vdst}] = {a};"]
     if name not in VECTOR:
         raise Untranslatable(f"non traduite en HLSL : {name} (VOP3)")
-    expression = VECTOR[name].format(a=a, b=b, c=c, d=f"v[{fields.vdst}]", k=hexa(literal or 0))
+    if name in SIXTEEN_BIT_RESULTS and (fields.op_sel or fields.clamp):
+        raise Untranslatable(f"non traduite en HLSL : {name} avec op_sel/clamp (VOP3, résultat 16 bits)")
+    expression =VECTOR[name].format(a=a, b=b, c=c, d=f"v[{fields.vdst}]", k=hexa(literal or 0))
     if is_float and (fields.clamp or fields.omod):
         scaled = f"asfloat({expression}) * {OUTPUT_SCALE.get(fields.omod, '1.0f')}"
         expression = f"asuint({'saturate(' + scaled + ')' if fields.clamp else scaled})"

@@ -5,6 +5,7 @@ sont utilisées. La LDS est `g_lds` (groupshared). Sur RDNA 2 un wave avance en 
 écriture est visible de toutes ses lignes à l'instruction suivante. En HLSL, les 32 threads
 ne sont pas synchrones, d'où une barrière de groupe après chaque écriture.
 """
+from emu.rdna2_exec_atomic import STRIDE64
 from emu.rdna2_exec_memory import LDS_ATOMIC, LDS_PATTERN, SCALAR_PATTERN, VECTOR_ATOMIC, VECTOR_PATTERN, WIDTHS
 from emu.rdna2_exec_ops import signed
 from emu.rdna2_hlsl_ops import NULL, OFF, Untranslatable, hexa, source
@@ -112,8 +113,9 @@ def _lds(name, word, active):
     if size < 4:
         raise Untranslatable(f"non traduite en HLSL : {name} (LDS sous le mot)")
     words = size // 4
-    if found.group(2):
-        places = [(offset0 * size, data0, vdst), (offset1 * size, data1, vdst + words)]
+    if found.group(2):              # read2/write2[st64] : décalages en éléments (× 64 pour st64)
+        step = size * (STRIDE64 if found.group(2) == "2st64" else 1)
+        places = [(offset0 * step, data0, vdst), (offset1 * step, data1, vdst + words)]
     else:
         places = [(combined, data0, vdst)]
     lines = []

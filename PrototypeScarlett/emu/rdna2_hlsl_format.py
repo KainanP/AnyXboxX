@@ -99,7 +99,8 @@ uint4 BufDecode(uint info, uint4 w) {{
   for (uint i = 0u; i < BufCount(info); i++) {{
     uint n = BufWidth(info, i);
     uint word = w[position >> 5];
-    uint field = n >= 32u ? word : (word >> (position & 31u)) & ((1u << n) - 1u);
+    // Champ par décalage à gauche puis à droite : avec (word >> p) & masque, le pilote AMD RDNA 2 perd le >> 16 des moitiés hautes.
+    uint field = n >= 32u ? word : (word << (32u - n - (position & 31u))) >> (32u - n);
     c[i] = BufComponent(info & 7u, field, n);
     position += n;
   }}

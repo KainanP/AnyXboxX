@@ -104,6 +104,12 @@ def test_constants_literals_and_scalars_give_16_bit_operands():
     assert execute(vop2("v_add_f16", 3, 4, 2), v={2: 0x3800, 3: OLD}, s={4: 0xFFFF_3800}).v[3][0] == 0x1234_3C00
 
 
+def test_every_inline_float_constant_reads_as_its_half():
+    for code, value in rdna2_exec.INLINE_FLOATS.items():                    # constante + 0 : la constante en f16
+        wave = execute(vop2("v_add_f16", 3, code, 2), v={3: OLD})
+        assert wave.v[3][0] == 0x1234_0000 | f16.half_bits(value), code
+
+
 def test_accumulate_constant_and_conversion_forms():
     seeds = {1: 0x7777_4000, 2: 0x6666_4200, 3: 0x9999_3C00}
     assert execute(vop2("v_fmac_f16", 3, V + 1, 2), v=seeds).v[3][0] == 0x9999_4700        # 2 × 3 + 1
@@ -124,6 +130,7 @@ def test_lanes_outside_exec_keep_both_halves():
 def test_destination_may_be_a_source():
     assert execute(vop2("v_add_f16", 1, V + 1, 2), v={1: 0xABCD_3C00, 2: 0x3C00}).v[1][0] == 0xABCD_4000
     assert execute(vop2("v_fmac_f16", 2, V + 2, 2), v={2: 0xABCD_4000}).v[2][0] == 0xABCD_4600     # 2 × 2 + 2
+    assert execute(vop1("v_cvt_f16_f32", 5, V + 5), v={5: 0x3F80_0000}).v[5][0] == 0x3F80_3C00     # 1.0 lu en f32
 
 
 @pytest.mark.parametrize("code", [0xE9, 0xEA, 0xF9, 0xFA])

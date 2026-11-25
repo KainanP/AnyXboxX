@@ -8,9 +8,9 @@ qui les nomme, ce qui mesure ce qui reste à traduire.
 """
 import struct
 
-from emu import (rdna2, rdna2_exec_cmp64, rdna2_exec_dot, rdna2_exec_ext, rdna2_exec_f16, rdna2_exec_format,
-                 rdna2_exec_graphics, rdna2_exec_image, rdna2_exec_memory, rdna2_exec_movrel, rdna2_exec_pc,
-                 rdna2_exec_vop3, rdna2_exec_wide)
+from emu import (rdna2, rdna2_exec_cmp64, rdna2_exec_dot, rdna2_exec_ext, rdna2_exec_f16, rdna2_exec_f16conv,
+                 rdna2_exec_format, rdna2_exec_graphics, rdna2_exec_image, rdna2_exec_memory, rdna2_exec_movrel,
+                 rdna2_exec_pc, rdna2_exec_vop3, rdna2_exec_wide)
 from emu.rdna2_exec_ops import SCALAR, VECTOR, VECTOR_COMPARE, VECTOR_NO_OPERATION, BRANCHES, float_bits
 
 LANES = 32
@@ -183,6 +183,8 @@ def step(wave, data):
         _carry(wave, name, fields, literal)
     elif name in rdna2_exec_f16.OPERATIONS:     # avant is_ext : les formes SDWA/DPP du f16 sont refusées par rdna2_exec_f16
         rdna2_exec_f16.execute(wave, name, fields, literal)
+    elif name in rdna2_exec_f16conv.OPERATIONS:  # before is_ext: rdna2_exec_f16conv refuses the SDWA/DPP forms
+        rdna2_exec_f16conv.execute(wave, name, fields, literal)
     elif rdna2_exec_ext.is_ext(family, fields.get("src0")):
         rdna2_exec_ext.execute(wave, family, name, fields, literal or 0)
     elif name in VECTOR:
@@ -254,7 +256,7 @@ VOP2_CARRY = frozenset({"v_add_co_ci_u32", "v_sub_co_ci_u32", "v_subrev_co_ci_u3
 EXECUTABLE = frozenset({"s_endpgm", *SCALAR, *VECTOR, *VECTOR_COMPARE, *VECTOR_NO_OPERATION, *BRANCHES,
                         *VOP2_CARRY, *rdna2_exec_cmp64.COMPARE64, *rdna2_exec_wide.OPERATIONS,
                         *rdna2_exec_movrel.VECTOR, *rdna2_exec_movrel.SCALAR, *rdna2_exec_pc.OPERATIONS,
-                        *rdna2_exec_f16.OPERATIONS})
+                        *rdna2_exec_f16.OPERATIONS, *rdna2_exec_f16conv.OPERATIONS})
 
 
 def executable(family, name):

@@ -12,8 +12,8 @@ import struct
 import sys
 
 from emu import (rdna2, rdna2_exec_cmp16, rdna2_exec_div, rdna2_exec_wide, rdna2_hlsl_div, rdna2_hlsl_dot,
-                 rdna2_hlsl_ext, rdna2_hlsl_f16, rdna2_hlsl_format, rdna2_hlsl_image, rdna2_hlsl_movrel, rdna2_hlsl_pc,
-                 rdna2_hlsl_sad, rdna2_hlsl_scalar64, rdna2_hlsl_wide)
+                 rdna2_hlsl_ext, rdna2_hlsl_f16, rdna2_hlsl_f16conv, rdna2_hlsl_format, rdna2_hlsl_image,
+                 rdna2_hlsl_movrel, rdna2_hlsl_pc, rdna2_hlsl_sad, rdna2_hlsl_scalar64, rdna2_hlsl_wide)
 from emu.rdna2_exec_ops import signed
 from emu.rdna2_exec_ops import SIXTEEN_BIT_RESULTS, VECTOR_NO_OPERATION
 from emu.rdna2_exec_vop3 import MAD64, Fields, float_inputs, float_result
@@ -172,6 +172,8 @@ def modified(code, index, fields, literal, is_float):
 def _vop3(name, opcode, fields, literal, active=ACTIVE):
     if name in rdna2_hlsl_f16.TEMPLATES:
         return rdna2_hlsl_f16.vop3(name, fields, literal, active)
+    if name in rdna2_hlsl_f16conv.TRANSLATED:
+        return rdna2_hlsl_f16conv.vop3(name, fields, literal, active)
     is_float = float_result(name)
     a, b, c = (modified(code, i, fields, literal, float_inputs(name)) for i, code in enumerate(fields.sources))
     if opcode < 0x100 and is_compare(name):
@@ -242,6 +244,8 @@ def statements(data, instruction, finish="return;", special=None, active=ACTIVE)
         lit = _literal(data, instruction, 1)
         if name in rdna2_hlsl_f16.TEMPLATES:        # avant is_ext : les formes SDWA/DPP du f16 sont refusées par rdna2_hlsl_f16
             return rdna2_hlsl_f16.vector(name, fields, lit, active)
+        if name in rdna2_hlsl_f16conv.TRANSLATED:   # before is_ext: SDWA/DPP forms refused by rdna2_hlsl_f16conv
+            return rdna2_hlsl_f16conv.vector(name, fields, lit, active)
         if rdna2_hlsl_ext.is_ext(family, fields.get("src0")):
             return rdna2_hlsl_ext.statements(family, name, fields, lit or 0, active)
         return _vector(name, fields, lit, active)
@@ -279,7 +283,7 @@ def translate(data, sgprs=None, wave_size=32):
         return rdna2_hlsl_wave64.translate(data, sgprs)
     helpers = "\n".join((ALU_HELPERS, rdna2_hlsl_wide.HELPERS, rdna2_hlsl_div.HELPERS, rdna2_hlsl_image.HELPERS,
                          rdna2_hlsl_format.HELPERS, rdna2_hlsl_dot.HELPERS, rdna2_hlsl_sad.HELPERS,
-                         rdna2_hlsl_f16.HELPERS))
+                         rdna2_hlsl_f16.HELPERS, rdna2_hlsl_f16conv.HELPERS))
     prelude = PRELUDE.replace("[numthreads", helpers + "\n[numthreads", 1)
     return "\n".join([prelude.rstrip("\n"), *body(data, sgprs), "}", ""])
 
@@ -382,7 +386,7 @@ def coverage_names():
             | set(rdna2_hlsl_scalar64.SCALAR64)
             | rdna2_hlsl_wide.TRANSLATED | rdna2_hlsl_div.TRANSLATED | rdna2_hlsl_movrel.TRANSLATED
             | rdna2_hlsl_dot.TRANSLATED | rdna2_hlsl_sad.TRANSLATED | rdna2_hlsl_pc.TRANSLATED
-            | set(rdna2_hlsl_f16.TEMPLATES)
+            | set(rdna2_hlsl_f16.TEMPLATES) | rdna2_hlsl_f16conv.TRANSLATED
             | {"s_endpgm", "v_readlane_b32", "v_writelane_b32", "v_readfirstlane_b32"})
 
 

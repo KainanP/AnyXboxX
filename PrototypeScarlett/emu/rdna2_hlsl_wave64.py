@@ -13,8 +13,8 @@ contre l'interpréteur de référence en wave64 (`rdna2_exec.Wave(lanes=64)`).
 """
 import re
 
-from emu import (rdna2, rdna2_hlsl, rdna2_hlsl_div, rdna2_hlsl_dot, rdna2_hlsl_ext, rdna2_hlsl_f16, rdna2_hlsl_format,
-                 rdna2_hlsl_image, rdna2_hlsl_sad, rdna2_hlsl_wide)
+from emu import (rdna2, rdna2_hlsl, rdna2_hlsl_cmpf16, rdna2_hlsl_div, rdna2_hlsl_dot, rdna2_hlsl_ext,
+                 rdna2_hlsl_f16, rdna2_hlsl_format, rdna2_hlsl_image, rdna2_hlsl_sad, rdna2_hlsl_wide)
 from emu.rdna2_exec_cmp16 import check_vop3
 from emu.rdna2_exec_memory import ADD_TID
 from emu.rdna2_exec_vop3 import Fields, float_inputs
@@ -149,6 +149,9 @@ def _vector(name, fields, literal):
         return [f"{scalar_target(fields['vdst'])} = ReadLane64(lane, {a}, FirstLane64(s[126], s[127]));"]
     if is_compare(name):
         return _compare(name, a, b, VCC)
+    if name in rdna2_hlsl_cmpf16.COMPARES:
+        condition, writes_exec = rdna2_hlsl_cmpf16.vopc_condition(name, fields, literal)
+        return [_ballot(EXEC if writes_exec else VCC, f"({ACTIVE}) && ({condition})")]
     if name in CARRY:
         return _carry(name, a, b, VCC, fields["vdst"], VCC)
     if name == "v_cndmask_b32":
@@ -159,6 +162,9 @@ def _vector(name, fields, literal):
 def _vop3(name, opcode, fields, literal):
     """VOP3 dépendant de la taille du wave ; None pour les autres."""
     a, b, _ = (modified(code, i, fields, literal, float_inputs(name)) for i, code in enumerate(fields.sources))
+    if name in rdna2_hlsl_cmpf16.COMPARES:
+        condition, writes_exec = rdna2_hlsl_cmpf16.vop3_condition(name, fields, literal)
+        return [_ballot(EXEC if writes_exec else fields.vdst, f"({ACTIVE}) && ({condition})")]
     if opcode < COMPARE_END and is_compare(name):
         check_vop3(name, fields.op_sel, Untranslatable)
         return _compare(name, a, b, fields.vdst)
@@ -221,7 +227,7 @@ def translate(data, sgprs=None):
     """Texte HLSL d'un programme RDNA 2 wave64 ; `sgprs` : valeurs initiales {numéro: valeur}."""
     helpers = "\n".join((ALU_HELPERS, rdna2_hlsl_wide.HELPERS, rdna2_hlsl_div.HELPERS, rdna2_hlsl_image.HELPERS,
                          rdna2_hlsl_format.HELPERS, rdna2_hlsl_dot.HELPERS,
-                         rdna2_hlsl_sad.HELPERS, rdna2_hlsl_f16.HELPERS))
+                         rdna2_hlsl_sad.HELPERS, rdna2_hlsl_f16.HELPERS, rdna2_hlsl_cmpf16.HELPERS))
     prelude = PRELUDE.replace("[numthreads", helpers + "\n[numthreads", 1)
     lines = rdna2_hlsl.body(data, sgprs, branches=BRANCHES64, translate_one=statements)
     return "\n".join([prelude.rstrip("\n"), *lines, "}", ""])

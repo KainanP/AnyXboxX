@@ -11,6 +11,7 @@ from test_rdna2_exec_memory import INPUT, global_
 from test_rdna2_f16 import REFUSED_VOP3
 from test_rdna2_graphics import PIXEL_SHADER, VERTEX_SHADER, WIDTH
 from test_rdna2_hlsl import compare, store_lane, with_lane_offset
+import test_rdna2_hlsl_wave64 as wave64
 
 gpu = pytest.mark.skipif(not rdna2_gpu.available(), reason="dxc ou anyxboxx_gpu_run.exe absent")
 NAMES = ["v_add_f16", "v_sub_f16", "v_subrev_f16", "v_mul_f16", "v_fmac_f16", "v_fmamk_f16", "v_fmaak_f16",
@@ -60,6 +61,12 @@ def test_compute_translation_carries_the_f16_helpers():
     hlsl = rdna2_hlsl.translate(program(vop2("v_add_f16", 3, V + 1, 2)))
     assert "uint F32ToF16(uint f)" in hlsl
     assert "v[3] = (v[3] & 0xFFFF0000u) | F16Add((v[1] & 0xFFFFu), (v[2] & 0xFFFFu));" in hlsl
+
+
+def test_wave64_translation_carries_the_f16_helpers():
+    hlsl = rdna2_hlsl.translate(program(vop2("v_add_f16", 3, V + 1, 2)), wave_size=64)
+    assert "uint F16Add(uint a, uint b)" in hlsl
+    assert "if (LANE_ON) v[3] = (v[3] & 0xFFFF0000u) | F16Add((v[1] & 0xFFFFu), (v[2] & 0xFFFFu));" in hlsl
 
 
 def test_vertex_and_pixel_shaders_carry_the_f16_helpers():
@@ -124,4 +131,16 @@ def test_f16_vop3_match_the_interpreter():
                    (*vop3("v_add_f16", 10, V + 1, LITERAL), 0x1234_3800),
                    vop3("v_add_f16", 10, V + 1, const(0)), vop3("v_fma_f16", 10, V + 1, V + 2, const(0))]  # x + 0, x × y + 0
     expected, actual = compare(with_lane_offset(*LOADS, *into_v10(*operations)), memory=image())
+    assert actual == expected
+
+
+@gpu
+def test_f16_in_a_wave64_program_matches_the_interpreter():
+    loads = [word for slot, register in enumerate((1, 2, 4))
+             for word in global_("global_load_dword", addr=31, vdst=register, saddr=0, offset=slot * wave64.SLOT)]
+    expected, actual = wave64.compare(wave64.with_lane_offset(
+        *loads, vop2("v_add_f16", 10, V + 1, 2), *vop3("v_fma_f16", 11, V + 1, V + 2, V + 4, op_sel=0b1011),
+        vop1("v_cvt_f32_f16", 12, V + 4),
+        *wave64.store_lane(10, 0), *wave64.store_lane(11, 1), *wave64.store_lane(12, 2)),
+        memory=wave64.input_memory(3, 4, 5))
     assert actual == expected

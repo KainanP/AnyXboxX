@@ -10,6 +10,8 @@
 
 #[cfg(test)]
 mod cut_tables_tests;
+#[cfg(all(test, windows))]
+mod texture_read_tests;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -4859,10 +4861,12 @@ fn readable(list: &HostList, kind: ResourceType, view: &View) {
             // the host (title memory does not have them).
             let aliased = crate::resource::alias_of(*resource as This)
                 .is_some_and(|source| crate::texture::alias(list, *resource as This, source));
-            if !aliased
-                && let Some(t) = crate::resource::host_copy(*resource as This)
-                && t.flags() & 0x7 == 0
-            {
+            // One lookup of the host copy (and twin) for the upload, the
+            // twin and the state: each lookup takes the texture's lock.
+            let Some((copy, twin)) = crate::resource::host_side(*resource as This) else {
+                return;
+            };
+            if !aliased && copy.flags() & 0x7 == 0 {
                 // (A texture the title writes: no target, depth or unordered
                 // access, `crate::texture::title_written`.)
                 // Of a texture the title placed, the levels the view shows.
@@ -4873,7 +4877,9 @@ fn readable(list: &HostList, kind: ResourceType, view: &View) {
                 crate::texture::upload_from(list, *resource as This, first);
             }
             // A depth texture shaders also write: what they wrote, first.
-            list.twin_use(*resource as This, false, false);
+            if let Some(twin) = &twin {
+                list.twin_use_held(&copy, twin, false, false);
+            }
             // The depth target the draw only tests is read in both ways at
             // once: both read states, which its preparation asks for too.
             let (tested, _) = TESTED_DEPTH.get();
@@ -4883,7 +4889,7 @@ fn readable(list: &HostList, kind: ResourceType, view: &View) {
             } else {
                 SHADER_RESOURCE
             };
-            crate::list::ensure_state(list, *resource as This, state);
+            crate::list::ensure_held_state(list, &copy, state);
             #[cfg(feature = "diagnostics")]
             if tracing::enabled!(tracing::Level::DEBUG)
                 && let Some(t) = crate::resource::host_resource(*resource as This)

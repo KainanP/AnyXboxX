@@ -1313,6 +1313,9 @@ pub(crate) struct HostList {
     /// clamp uses instead when there is one: zeroed in the list before its
     /// first clamp, its notes copied to `budget` when the list closes.
     card_budget: OnceLock<Option<ID3D12Resource>>,
+    /// The GPU address of the words the clamp uses (`card_budget`'s if
+    /// there is one, else `budget`'s): asked of the driver once.
+    budget_at: OnceLock<u64>,
     /// Device-local scratch buffer for clamped indirect arguments (`indirect`),
     /// grown to the largest indirect execution recorded on the list.
     indirect_args: Mutex<Option<(ID3D12Resource, u64)>>,
@@ -4438,6 +4441,7 @@ impl Host {
                 indirects,
                 budget: OnceLock::new(),
                 card_budget: OnceLock::new(),
+                budget_at: OnceLock::new(),
                 indirect_args: Mutex::default(),
                 batch_args: Mutex::default(),
                 coming: Mutex::default(),
@@ -7456,8 +7460,8 @@ impl HostList {
                 self.zero_card_budget(card);
             }
         }
-        // SAFETY: a live buffer.
-        Some(unsafe { card.unwrap_or(buffer).GetGPUVirtualAddress() })
+        // SAFETY: a live buffer, kept as long as the list.
+        Some(*self.budget_at.get_or_init(|| unsafe { card.unwrap_or(buffer).GetGPUVirtualAddress() }))
     }
 
     /// The budget's words in the card's own memory ([`card_budget`]), if

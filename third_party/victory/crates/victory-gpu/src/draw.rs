@@ -4596,7 +4596,7 @@ impl State {
         // host copies are kept alive by the list, and the signature is cached.
         unsafe {
             list.list.ExecuteIndirect(
-                &signature,
+                signature,
                 max,
                 &bounded,
                 at,
@@ -4668,15 +4668,27 @@ mod thread_tests {
     }
 }
 
+#[cfg(all(test, windows))]
+mod indirect_signature_tests;
+
 /// The host command signature for one argument of `kind` with records
 /// `stride` bytes apart (no root arguments, so no root signature), made
-/// once.
-fn host_signature(kind: u32, stride: u32) -> Option<ID3D12CommandSignature> {
-    static MADE: std::sync::Mutex<Vec<((u32, u32), ID3D12CommandSignature)>> =
-        std::sync::Mutex::new(Vec::new());
+/// once and kept for good. Each thread remembers the last one it asked
+/// for: the title's threads ask for the same few, and the lock and the
+/// object's reference count were shared by all of them.
+fn host_signature(kind: u32, stride: u32) -> Option<&'static ID3D12CommandSignature> {
+    type Made = ((u32, u32), &'static ID3D12CommandSignature);
+    thread_local! {
+        static LAST: std::cell::Cell<Option<Made>> = const { std::cell::Cell::new(None) };
+    }
+    if let Some((_, s)) = LAST.get().filter(|(k, _)| *k == (kind, stride)) {
+        return Some(s);
+    }
+    static MADE: std::sync::Mutex<Vec<Made>> = std::sync::Mutex::new(Vec::new());
     let mut made = MADE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((_, s)) = made.iter().find(|(k, _)| *k == (kind, stride)) {
-        return Some(s.clone());
+    if let Some(&m) = made.iter().find(|(k, _)| *k == (kind, stride)) {
+        LAST.set(Some(m));
+        return Some(m.1);
     }
     let argument = D3D12_INDIRECT_ARGUMENT_DESC {
         Type: D3D12_INDIRECT_ARGUMENT_TYPE(kind as i32),
@@ -4701,8 +4713,9 @@ fn host_signature(kind: u32, stride: u32) -> Option<ID3D12CommandSignature> {
         once!(error = %e, kind, stride, "host command signature refused");
         return None;
     }
-    let signature = signature?;
-    made.push(((kind, stride), signature.clone()));
+    let signature: &'static ID3D12CommandSignature = Box::leak(Box::new(signature?));
+    made.push(((kind, stride), signature));
+    LAST.set(Some(((kind, stride), signature)));
     Some(signature)
 }
 

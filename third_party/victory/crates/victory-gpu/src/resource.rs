@@ -5447,6 +5447,7 @@ float4 lit() : SV_Target { return 1.0; }
             let kept = resource(texture).host.made.lock().unwrap_or_else(|e| e.into_inner()).is_some();
             (under_share(budget, used, ROOM), kept)
         };
+        // (Letting go starts 2 below the room share, 83 % here: `host::vram_keep_for`.)
         assert_eq!(look(82, first), (true, true), "82 %: room, kept");
         assert_eq!(look(86, first), (false, false), "86 %: refused, and the idle copy must go");
         assert_eq!(look(88, control), (false, false), "88 %: refused, let go");

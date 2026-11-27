@@ -54,6 +54,8 @@ pub mod dxgi;
 pub mod external;
 pub mod fence;
 pub mod frame;
+#[cfg(windows)]
+mod frame_rate;
 pub mod frametime;
 #[cfg(windows)]
 pub mod framegen;
@@ -127,6 +129,8 @@ mod shadow;
 #[cfg(windows)]
 mod tiles;
 pub mod signature;
+#[cfg(windows)]
+pub mod streamline;
 mod switch;
 #[cfg(all(windows, feature = "diagnostics"))]
 mod ab;

@@ -3753,6 +3753,20 @@ impl HostHeap {
         self.made.get(index).is_some_and(|key| key != 0)
     }
 
+    /// Of the 32-byte view record at `handle` (slot `index`, tests): whether
+    /// the pass over records copied in as bytes last saw it as it is now, and
+    /// whether the slot is made from it.
+    #[cfg(test)]
+    pub(crate) fn synced(&self, index: u32, handle: u64) -> (bool, bool) {
+        // SAFETY: the caller's slot, in its title memory.
+        let now = unsafe { std::slice::from_raw_parts(handle as *const u8, 32) };
+        let copied = self.copied.lock().unwrap_or_else(|e| e.into_inner());
+        let at = index as usize * 32;
+        let seen = copied.get(at..at + 32).is_some_and(|s| s == now);
+        let key = record_key(handle);
+        (seen, key != 0 && self.made.get(index) == Some(key))
+    }
+
     /// Whether host slot `index` shows `buffer`; `None` if it shows no
     /// resource (diagnostics: a buffer view's slot must show the host copy
     /// that is brought up to date for it).

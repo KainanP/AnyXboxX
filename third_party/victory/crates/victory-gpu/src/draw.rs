@@ -3198,6 +3198,7 @@ impl State {
         // The ray-tracing structure builder's stages run all or none.
         if crate::pipeline::is_builder(self.pipeline as This) && !crate::pipeline::builder_runs() {
             DROPPED.fetch_add(1, Ordering::Relaxed);
+            crate::pipeline::report_drop(self.pipeline as This, "dispatch", "ray tracing builder disabled");
             #[cfg(feature = "diagnostics")]
             {
                 crate::pipeline::note_why("a stage of the ray-tracing structure builder, which is off".to_owned());
@@ -3211,6 +3212,7 @@ impl State {
                 "a dispatch without a host pipeline dropped"
             );
             DROPPED.fetch_add(1, Ordering::Relaxed);
+            crate::pipeline::report_drop(self.pipeline as This, "dispatch", "pipeline unavailable");
             #[cfg(feature = "diagnostics")]
             {
                 crate::pipeline::note_drop(self.pipeline as This);
@@ -3219,11 +3221,13 @@ impl State {
             return;
         };
         if !p.compute {
+            crate::pipeline::report_drop(self.pipeline as This, "dispatch", "graphics pipeline bound");
             once!("a dispatch with a graphics pipeline");
             return;
         }
         if !self.bind(list, p, true) {
             DROPPED.fetch_add(1, Ordering::Relaxed);
+            crate::pipeline::report_drop(self.pipeline as This, "dispatch", "binding failed");
             // A stage of the structure builder that cannot be bound is a
             // dropped stage: the others stop too.
             if crate::pipeline::is_builder(self.pipeline as This) {
@@ -3687,6 +3691,7 @@ impl State {
             };
         if !ran {
             DROPPED.fetch_add(1, Ordering::Relaxed);
+            crate::pipeline::report_drop(self.pipeline as This, "draw/mesh", "pipeline ready; preparation or geometry failed");
             #[cfg(feature = "diagnostics")]
             dropped(self.pipeline);
         }
@@ -4181,6 +4186,7 @@ impl State {
         }
         if !ran {
             DROPPED.fetch_add(1, Ordering::Relaxed);
+            crate::pipeline::report_drop(self.pipeline as This, "draw/mesh", "pipeline ready; preparation or geometry failed");
             #[cfg(feature = "diagnostics")]
             dropped(self.pipeline);
         }
@@ -4317,6 +4323,7 @@ impl State {
         }
         if !ran {
             DROPPED.fetch_add(1, Ordering::Relaxed);
+            crate::pipeline::report_drop(self.pipeline as This, "draw/mesh", "pipeline ready; preparation or geometry failed");
             #[cfg(feature = "diagnostics")]
             dropped(self.pipeline);
         }
@@ -4412,6 +4419,14 @@ impl State {
         Some((scratch, at))
     }
 
+    pub(crate) fn report_indirect_layout(&self) {
+        crate::pipeline::report_drop(self.pipeline as This, "indirect", "unsupported signature or unmapped argument/count buffer");
+    }
+
+    pub(crate) fn report_unsupported_mesh_indirect(&self) {
+        crate::pipeline::report_drop(self.pipeline as This, "DispatchMeshX indirect", "unsupported");
+    }
+
     /// Indirect execution of a one-argument signature of `kind` (PC
     /// numbering: 0 draw, 1 indexed draw, 2 dispatch, 10 mesh dispatch) with
     /// records `stride` bytes apart at title address `arguments`, and the
@@ -4438,13 +4453,18 @@ impl State {
         const INDEXED: u32 = 1;
         const DISPATCH: u32 = 2;
         const MESH: u32 = 10;
-        #[cfg(feature = "diagnostics")]
-        let why = |what: &str| crate::pipeline::note_why(format!("indirect kind {kind}: {what}"));
-        #[cfg(not(feature = "diagnostics"))]
-        let why = |_: &str| {};
-        let Some(p) = crate::pipeline::host_pipeline(self.pipeline as This) else {
+        let pipeline = self.pipeline;
+        let why = |what: &str| {
+            if crate::drop_report::enabled() {
+                crate::pipeline::report_drop(pipeline as This, &format!("indirect kind {kind}"), what);
+            }
             #[cfg(feature = "diagnostics")]
-            crate::pipeline::note_drop(self.pipeline as This);
+            crate::pipeline::note_why(format!("indirect kind {kind}: {what}"));
+        };
+        let Some(p) = crate::pipeline::host_pipeline(self.pipeline as This) else {
+            crate::pipeline::report_drop(pipeline as This, "indirect", "pipeline unavailable");
+            #[cfg(feature = "diagnostics")]
+            crate::pipeline::note_drop(pipeline as This);
             return false;
         };
         // Indirect rectangles (the title's tiled lighting, 256

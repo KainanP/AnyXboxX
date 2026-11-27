@@ -1013,6 +1013,20 @@ const COPIED_GRACE: u64 = 4;
 /// In [`HostHeap::tabled`]: a draw read the slot in that frame.
 const TABLED_READ: u32 = 1 << 31;
 
+pub(crate) fn seen_since(stamp: u32, cutoff: u64, frame: u64) -> bool {
+    let stamp = stamp & !TABLED_READ;
+    if stamp == 0 {
+        return false;
+    }
+    let mask = !TABLED_READ;
+    let now = (frame as u32).wrapping_add(1) & mask;
+    let cut = (cutoff as u32).wrapping_add(1) & mask;
+    // Ages back from now, in the stamps' 31 bits.
+    let age = now.wrapping_sub(stamp) & mask;
+    let limit = now.wrapping_sub(cut) & mask;
+    age < limit
+}
+
 /// Since the start: writes of texture views into slots that count as a
 /// table's (due later), and slots that left the queue because a draw read
 /// them through a table.
@@ -2506,6 +2520,42 @@ impl HostHeap {
         }
         self.unmake(index);
         STALE[4].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        true
+    }
+
+    pub(crate) fn slots_showing(
+        &self,
+        raws: &std::collections::HashSet<usize>,
+        frame: u64,
+        cutoff: u64,
+    ) -> Vec<(u32, usize, bool, bool)> {
+        self.kept
+            .iter()
+            .enumerate()
+            .filter_map(|(i, slot)| {
+                // (A lock to a slot: see `kept`.)
+                let raw = {
+                    let r = slot.lock().unwrap_or_else(|e| e.into_inner());
+                    windows::core::Interface::as_raw(r.as_ref()?) as usize
+                };
+                raws.contains(&raw).then(|| {
+                    let i = i as u32;
+                    let ok = i < self.count && !self.sampler && self.tabled_lately(i, frame);
+                    (i, raw, ok, seen_since(self.tabled_stamp(i), cutoff, frame))
+                })
+            })
+            .collect()
+    }
+
+    // Unlike a temporarily unmapped texture, an eviction must null the slot immediately.
+    pub(super) fn evict_texture_slot(&self, index: u32, resource: usize) -> bool {
+        let _locked = self.made.lock(index);
+        let Some(key) = self.made.get(index).filter(|&key| key != 0) else { return false };
+        if !matches!(view_at(key as u32, (key >> 32) as u32),
+            Some(View::Shader(r, _) | View::Unordered(r, _, _)) if r == resource) {
+            return false;
+        }
+        self.unmake(index);
         true
     }
 

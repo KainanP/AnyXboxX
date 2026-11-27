@@ -1255,6 +1255,17 @@ impl Staging {
             return u32::MAX;
         }
         let tail = (self.layout.first_tail_mip as usize).min(mips.len());
+        // The size cap (`crate::tiles::max_size`): levels over it are never
+        // the title's here, as if no view showed them.
+        let first = match crate::tiles::max_size() {
+            Some(cap) => {
+                let desc = &self.layout.desc;
+                let within =
+                    crate::tiles::first_within(u64::from(desc.width), u64::from(desc.height), mips.len() as u32, cap);
+                first.max(u64::from(within))
+            }
+            None => first,
+        };
         let there = |from: u64, to: u64| {
             to > from && to <= limit && committed(self.memory.wrapping_add(from as usize), (to - from) as usize)
         };

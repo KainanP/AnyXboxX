@@ -1286,6 +1286,9 @@ struct Hosted {
     /// Its host copy was let go as idle once.
     gone: std::sync::atomic::AtomicBool,
     slot_returned: std::sync::atomic::AtomicU64,
+    /// (Neptune) The frame (plus one) the eviction let it go while no shader read any of its
+    /// slots (`crate::feedback`); 0: not, or made again since.
+    fb_evicted: std::sync::atomic::AtomicU64,
     slot_evicted: std::sync::atomic::AtomicU64,
     /// A texture of [`PLACED_TEXTURES`].
     placed: std::sync::atomic::AtomicBool,
@@ -1907,6 +1910,7 @@ fn hosted(this: This, make: bool) -> Option<Made> {
         // Slots the title wrote with views of it while it had no host copy
         // are made before the next submission runs.
         crate::descriptor::texture_made(this as usize);
+        r.host.fb_evicted.store(0, Relaxed);
         if slot_evict_settings().is_some() {
             let evicted = r.host.slot_evicted.swap(0, Relaxed);
             if evicted != 0 {
@@ -1923,6 +1927,20 @@ fn hosted(this: This, make: bool) -> Option<Made> {
         r.host.used.store(now, Relaxed);
     }
     made.clone()
+}
+
+/// (Neptune) If title texture `this` was let go by the slot eviction while no shader read any of
+/// its slots (`crate::feedback`) and has not been made since: the frame it went.
+#[cfg(windows)]
+pub(crate) fn unread_evicted(this: This) -> Option<u64> {
+    let r = resource(this);
+    if r.desc.dimension == BUFFER {
+        return None;
+    }
+    match r.host.fb_evicted.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        f => Some(f - 1),
+    }
 }
 
 /// The host copy of title texture `this` if it is made, without making it
@@ -2602,7 +2620,7 @@ fn slot_evict(video: Option<[u64; 4]>, idle_ms: u64, frames: u64) {
     let (Some((high, low, cap)), Some([budget, used, ..])) = (slot_evict_settings(), video) else {
         return;
     };
-    // (Neptune) Frames by time, a point a sweep (once a second), two minutes of them: what
+    // (Neptune) Frames by time, a point a sweep (once a second), twelve minutes of them: what
     // frame "`idle_ms` ago" was, for the slots' table stamps, which count frames.
     static RING: std::sync::Mutex<std::collections::VecDeque<(u64, u64)>> = std::sync::Mutex::new(std::collections::VecDeque::new());
     let now_ms = crate::host::now_ms();
@@ -2610,11 +2628,20 @@ fn slot_evict(video: Option<[u64; 4]>, idle_ms: u64, frames: u64) {
     let cutoff = {
         let mut ring = RING.lock().unwrap_or_else(|e| e.into_inner());
         ring.push_back((frame, now_ms));
-        while ring.len() > 120 {
+        while ring.len() > 720 {
             ring.pop_front();
         }
-        frame_at(&ring, now_ms.saturating_sub(idle_ms))
+        (
+            frame_at(&ring, now_ms.saturating_sub(idle_ms)),
+            // (Neptune) Bindless usage feedback: the frame its own, longer idle time back, if
+            // the feedback has watched every frame since (`crate::feedback::covers`).
+            crate::feedback::on()
+                .then(|| frame_at(&ring, now_ms.saturating_sub(crate::feedback::idle_ms())))
+                .flatten()
+                .filter(|&c| crate::feedback::covers(c)),
+        )
     };
+    let (cutoff, fb_cutoff) = cutoff;
     static EVICTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     let (on, need) = slot_plan(EVICTING.load(Relaxed), budget, used, high, low, cap);
     EVICTING.store(on, Relaxed);
@@ -2628,6 +2655,7 @@ fn slot_evict(video: Option<[u64; 4]>, idle_ms: u64, frames: u64) {
     };
     let mut copies = Vec::new();
     let mut raws = std::collections::HashMap::new();
+    let mut fb_old = std::collections::HashSet::new();
     for &at in textures().iter() {
         // SAFETY: as in `pressure_victims`.
         let r = unsafe { &*(at as *const Resource) };
@@ -2644,14 +2672,23 @@ fn slot_evict(video: Option<[u64; 4]>, idle_ms: u64, frames: u64) {
             if crate::host::long_ago(stamp, idle_ms, frames) && std::sync::Arc::strong_count(host) == 1 {
                 if host.card_bytes() == 0 { continue; }
                 copies.push((at, stamp, host.card_bytes()));
-                raws.insert(windows::core::Interface::as_raw(&host.texture) as usize, at);
+                let raw = windows::core::Interface::as_raw(&host.texture) as usize;
+                raws.insert(raw, at);
+                // (Neptune) Bindless: only a copy made (or last asked for) the feedback's whole
+                // idle time ago. One made since may not have been drawn yet (the world's
+                // textures stream in ahead of the frames that show them): never read is not
+                // idle. A first run let go of such copies as they arrived, and 457 came back
+                // within 2 s.
+                if fb_cutoff.is_some() && crate::host::long_ago(stamp, crate::feedback::idle_ms(), frames) {
+                    fb_old.insert(raw);
+                }
             }
         }
     }
     if copies.is_empty() {
         return;
     }
-    let (slots, kept, blocked) = crate::descriptor::evictable_slots(&raws, frame, cutoff);
+    let (slots, kept, blocked) = crate::descriptor::evictable_slots(&raws, frame, cutoff, fb_cutoff, &fb_old);
     SLOT_STATE[3].store(raws.len() as u64, Relaxed);
     SLOT_STATE[2].store(blocked, Relaxed);
     SLOT_STATE[1].store(kept, Relaxed);
@@ -2676,6 +2713,11 @@ fn slot_evict(video: Option<[u64; 4]>, idle_ms: u64, frames: u64) {
                 crate::texture::unstage(at as This);
                     r.host.wanted.store(u32::MAX, Relaxed);
                 r.host.slot_evicted.store(crate::host::moment().max(1), Relaxed);
+                // (Neptune) Let go while no shader read it: its other slots, when the queue
+                // comes to them, are parked too (`unread_evicted`).
+                if slots[&at].iter().any(|s| s.2) {
+                    r.host.fb_evicted.store(frame + 1, Relaxed);
+                }
                 made.take()
             } else {
                 None
@@ -3336,6 +3378,7 @@ fn hand_out_resource(
             no_target: std::sync::atomic::AtomicU32::new(0),
             whole: std::sync::atomic::AtomicBool::new(false),
             capped: std::sync::atomic::AtomicBool::new(false),
+            fb_evicted: std::sync::atomic::AtomicU64::new(0),
         },
     });
     // The host copy waits for the texture's first use ([`Hosted`]).

@@ -1585,6 +1585,11 @@ fn create() -> windows::core::Result<Host> {
 }
 
 impl Host {
+    pub(crate) fn completed(&self) -> u64 {
+        // SAFETY: this fence belongs to the live host queue.
+        unsafe { self.fence.GetCompletedValue() }
+    }
+
     /// The driver's version, as the system counts it (0: not known).
     pub(crate) fn driver(&self) -> i64 {
         let adapter = self.adapter.as_ref();
@@ -7577,6 +7582,20 @@ impl Host {
         batch.fill();
         stage.next("submit: the last refreshes");
         batch.flush(None);
+        // (Neptune) Bindless usage feedback (`crate::feedback`): its copy and clear, first.
+        if crate::feedback::on()
+            && let Some(pre) = crate::feedback::pre_list()
+        {
+            lists.insert(0, Some(pre));
+            #[cfg(feature = "diagnostics")]
+            {
+                marks.iter_mut().for_each(|m| m.0 += 1);
+                marks.insert(0, (0, crate::copystat::Timed::Other));
+            }
+            for first in firsts.iter_mut().skip(1) {
+                *first += 1;
+            }
+        }
         crate::watch::ask_once_end();
         #[cfg(feature = "diagnostics")]
         split.part(2);
@@ -7674,6 +7693,9 @@ impl Host {
                 }
                 self.queue.Signal(&self.fence, *submitted)
             };
+            if crate::feedback::on() {
+                crate::feedback::sent(*submitted);
+            }
             awake::sent(&self.device);
             #[cfg(feature = "diagnostics")]
             crate::timeline::sent(sending, *submitted, stamp);
@@ -7792,6 +7814,7 @@ impl Host {
             }
         }
         mark_frame_preparations(runs);
+        if crate::feedback::on() { crate::feedback::sent(*submitted); }
         let _ = &firsts;
         let fence = *submitted;
         FINISHED.store(this_submission, Ordering::Release);

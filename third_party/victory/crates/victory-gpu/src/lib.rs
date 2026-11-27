@@ -46,6 +46,8 @@ mod cores;
 #[cfg(windows)]
 mod cpucores;
 pub mod descriptor;
+#[cfg(windows)]
+mod feedback;
 pub mod device;
 #[cfg(windows)]
 mod draw;

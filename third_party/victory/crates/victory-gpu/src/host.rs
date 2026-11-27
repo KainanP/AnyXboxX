@@ -3565,6 +3565,7 @@ enum Step {
     /// Brings a texture's staging buffer up to date: once per submission,
     /// whichever lists sample it, until a title copy intervenes.
     Texture(std::sync::Arc<crate::texture::Staging>),
+    GpuTexture(std::sync::Arc<crate::texture::Staging>, std::sync::Arc<crate::detile::Upload>),
     /// Reads a CPU-written linear movie plane into a per-list upload buffer.
     Plane((usize, usize), Box<dyn Fn() + Send>),
     /// A title buffer copy that the list does on the card ([`place`]): what
@@ -4475,7 +4476,7 @@ fn blocked_by(written: &[(usize, usize)], runs: &[&HostList], count: bool) -> Op
                         return Some(WHY_READ);
                     }
                 }
-                Step::Texture(staging) => {
+                Step::Texture(staging) | Step::GpuTexture(staging, _) => {
                     let (at, len) = staging.memory();
                     if touches(written, at, at + len) {
                         if count {
@@ -7583,6 +7584,19 @@ impl Host {
         stage.next("submit: the last refreshes");
         batch.flush(None);
         // (Neptune) Bindless usage feedback (`crate::feedback`): its copy and clear, first.
+        if crate::detile::on()
+            && let Some(pre) = crate::detile::pre_list()
+        {
+            lists.insert(0, Some(pre));
+            #[cfg(feature = "diagnostics")]
+            {
+                marks.iter_mut().for_each(|m| m.0 += 1);
+                marks.insert(0, (0, crate::copystat::Timed::Other));
+            }
+            for first in firsts.iter_mut().skip(1) {
+                *first += 1;
+            }
+        }
         if crate::feedback::on()
             && let Some(pre) = crate::feedback::pre_list()
         {
@@ -7693,6 +7707,7 @@ impl Host {
                 }
                 self.queue.Signal(&self.fence, *submitted)
             };
+            if crate::detile::on() { crate::detile::sent(*submitted); }
             if crate::feedback::on() {
                 crate::feedback::sent(*submitted);
             }
@@ -7814,6 +7829,7 @@ impl Host {
             }
         }
         mark_frame_preparations(runs);
+        if crate::detile::on() { crate::detile::sent(*submitted); }
         if crate::feedback::on() { crate::feedback::sent(*submitted); }
         let _ = &firsts;
         let fence = *submitted;
@@ -9422,6 +9438,11 @@ impl HostList {
         self.deferred().copies.push(Step::Texture(staging));
     }
 
+    pub(crate) fn defer_gpu_texture(&self, staging: std::sync::Arc<crate::texture::Staging>, upload: std::sync::Arc<crate::detile::Upload>) {
+        self.deferred().copies.push(Step::GpuTexture(staging, upload));
+    }
+
+
     /// A copy source owned exclusively by this list until reset after its
     /// last execution. A different list can prepare its movie plane concurrently.
     pub(crate) fn plane_upload(
@@ -9567,6 +9588,11 @@ impl HostList {
                         add(C::GpuWrites, 1);
                         add(C::SnapshotUs, snapshot.elapsed().as_micros() as u64);
                     }
+                    continue;
+                }
+                Step::GpuTexture(staging, upload) => {
+                    batch.texture_due(staging);
+                    staging.gpu_fill(upload);
                     continue;
                 }
                 Step::Texture(staging) => {

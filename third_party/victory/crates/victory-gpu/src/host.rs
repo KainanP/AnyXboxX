@@ -2794,7 +2794,7 @@ struct Sent {
 /// work to hand to the landing thread while still holding the submit lock.
 struct Submission<'a> {
     fence: u64,
-    ahead: Option<(std::sync::MutexGuard<'a, u64>, Sent)>,
+    ahead: Option<(census::Held<'a>, Sent)>,
 }
 
 /// A submission on the card that has not been waited for ([`late`]): its
@@ -3422,7 +3422,7 @@ pub(crate) fn settle_now(why: usize) {
     let Some(host) = host() else {
         return;
     };
-    let mut submitted = host.submitted.lock().unwrap_or_else(|e| e.into_inner());
+    let mut submitted = census::take(&host.submitted, census::settle_place(why));
     host.settle(&mut submitted, why);
 }
 
@@ -3583,7 +3583,7 @@ fn late_helper() {
             }
         }
         {
-            let mut submitted = host.submitted.lock().unwrap_or_else(|e| e.into_inner());
+            let mut submitted = census::take(&host.submitted, census::HELPER);
             // Something newer went up meanwhile: the card is waited for
             // again, the submitting thread is not held up for it.
             if line().target != target {
@@ -3977,6 +3977,7 @@ fn late_line(frames: f64) {
 }
 
 pub(crate) mod aside;
+pub(crate) mod census;
 pub(crate) mod awake;
 mod card_steps;
 pub(crate) mod indirects;
@@ -5860,7 +5861,7 @@ impl Host {
         // One submission at a time from preparation to copy-back: snapshots
         // and the ranges shaders write are per host copy, not per submission.
         let mut stage = crate::timeline::span("submit: the submission lock");
-        let mut submitted = self.submitted.lock().unwrap_or_else(|e| e.into_inner());
+        let mut submitted = census::take(&self.submitted, census::SUBMIT);
         let was_working = working(true);
         submitting(1, runs.len());
         #[cfg(feature = "diagnostics")]

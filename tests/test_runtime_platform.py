@@ -14,6 +14,7 @@ import sys
 import pytest
 from test_runtime_cpp import S_OK, GdkInterface, load
 from test_runtime_events import E_INVALIDARG, E_NOTIMPL, EVENT_CALLBACK
+from test_runtime_streaming import STREAMING
 from test_runtime_user_device import USER_DEVICE
 
 HDR = ("03F0FE74-FDD9-4E5C-B630-F9339C47ACC5", "35F07670-706E-4BFB-9476-090798C5EBF3")
@@ -112,6 +113,7 @@ def test_connectivity_subscription_is_not_implemented(runtime_dir):
     (NETWORKING, 16),                     # XNetworkingRegisterConnectivityHintChanged
     (USER_DEVICE, 4),                     # XUserRegisterForDeviceAssociationChanged
     (USER_DEVICE, 7),                     # XUserRegisterForDefaultAudioEndpointUtf16Changed
+    (STREAMING, 12),                      # XGameStreamingRegisterConnectionStateChanged
 ])
 def test_refused_subscriptions_are_logged(runtime_dir, interface, method):
     """Avec ANYXBOXX_TRACE=1, l'appel refusé laisse une ligne « E_NOTIMPL » dans le journal (stderr)."""

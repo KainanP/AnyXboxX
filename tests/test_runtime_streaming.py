@@ -15,6 +15,7 @@ STREAMING = ("0A2192AA-B2D5-4D58-83BE-383B6D80799E", "57786622-6605-46D0-B917-0F
 NOT_INITIALIZED, CLIENT_NOT_CONNECTED, NO_DATA, NO_DATACENTER, NOT_STREAMING_CONTROLLER = (
     0x89245400, 0x89245401, 0x89245402, 0x89245403, 0x89245404)
 DISCONNECTED = 0
+UNTOUCHED = 0x5EED_5EED_5EED_5EED
 CLIENT = 0x1234                         # XGameStreamingClientId quelconque : jamais connecté
 HRESULT, U32, U64, SIZE, PTR = ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint64, ctypes.c_size_t, ctypes.c_void_p
 
@@ -49,13 +50,13 @@ def test_a_local_game_has_no_streaming_client(streaming):
     assert streaming.method(11, U32, U64)(CLIENT) == DISCONNECTED   # XGameStreamingGetConnectionState
 
 
-def test_connection_changes_can_be_subscribed(streaming):
+def test_connection_subscription_is_not_implemented(streaming):
+    """Règle 3 : aucun client ne se connecte jamais, le rappel ne pourrait jamais partir (pas de jeton écrit)."""
     subscribe = streaming.method(12, HRESULT, PTR, PTR, PTR, ctypes.POINTER(U64))
     unsubscribe = streaming.method(13, ctypes.c_bool, U64, ctypes.c_bool)
-    callback, token = EVENT_CALLBACK(lambda context, client: None), U64()
-    assert subscribe(None, None, ctypes.cast(callback, PTR), ctypes.byref(token)) == S_OK
-    assert subscribe(None, None, None, ctypes.byref(U64())) == E_INVALIDARG
-    assert unsubscribe(token.value, True) is True and unsubscribe(token.value, True) is False
+    callback, token = EVENT_CALLBACK(lambda context, client: None), U64(UNTOUCHED)
+    assert subscribe(None, None, ctypes.cast(callback, PTR), ctypes.byref(token)) == E_NOTIMPL
+    assert token.value == UNTOUCHED and unsubscribe(token.value, True) is False
 
 
 def test_client_queries_report_the_client_as_not_connected(streaming):

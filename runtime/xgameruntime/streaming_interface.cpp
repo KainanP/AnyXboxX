@@ -72,15 +72,10 @@ HRESULT XGameStreamingGetClients(uint32_t, ClientId*, uint32_t* clients_used) no
 
 uint32_t XGameStreamingGetConnectionState(ClientId) noexcept { return kDisconnected; }
 
-// À l'inscription, le rappel part pour chaque client déjà connecté : aucun ici, et aucun
-// ne se connectera. Le jeton reste valable jusqu'au désabonnement.
-HRESULT RegisterConnectionStateChanged(void*, void*, void* callback, void* token) noexcept {
-  if (!Initialized()) return kNotInitialized;
-  return anyxboxx::AddSubscription(callback, token);
-}
-bool UnregisterConnectionStateChanged(RegistrationToken token, bool) noexcept {
-  return anyxboxx::RemoveSubscription(token.token);
-}
+// XGameStreamingRegisterConnectionStateChanged (12) reste ANYXBOXX_NOT_IMPLEMENTED (E_NOTIMPL
+// journalisé) : aucun client ne se connecte jamais, le rappel ne pourrait jamais partir (règle 3).
+// Le désabonnement n'a donc rien à retirer.
+bool UnregisterConnectionStateChanged(RegistrationToken, bool) noexcept { return false; }
 
 // --- Propriétés d'un client : aucun client, donc E_GAMESTREAMING_CLIENT_NOT_CONNECTED -----
 HRESULT RegisterClientPropertiesChanged(ClientId, void*, void*, void*, void*) noexcept {
@@ -161,7 +156,7 @@ void* const kStreamingMethods[] = {
     ANYXBOXX_METHOD(XGameStreamingGetClientCount),                 // 9
     ANYXBOXX_METHOD(XGameStreamingGetClients),                     // 10
     ANYXBOXX_METHOD(XGameStreamingGetConnectionState),             // 11
-    ANYXBOXX_METHOD(RegisterConnectionStateChanged),               // 12
+    ANYXBOXX_NOT_IMPLEMENTED,  // 12 XGameStreamingRegisterConnectionStateChanged
     ANYXBOXX_METHOD(UnregisterConnectionStateChanged),             // 13
     ANYXBOXX_METHOD(GetStreamAddedLatency),                        // 14
     ANYXBOXX_METHOD(XGameStreamingGetServerLocationNameSize),      // 15

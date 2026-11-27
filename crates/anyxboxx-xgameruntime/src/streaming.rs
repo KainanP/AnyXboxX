@@ -11,7 +11,6 @@
 use std::ffi::{c_char, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::events;
 use crate::log::trace;
 use crate::object::{E_INVALIDARG, HResult, S_OK};
 
@@ -100,27 +99,15 @@ unsafe extern "system" fn get_connection_state(_this: *mut c_void, _client: Clie
     DISCONNECTED
 }
 
-/// On registration the callback runs for each client already connected: none here, and none
-/// will connect. The token stays valid until it is unregistered.
-unsafe extern "system" fn register_connection_state_changed(
-    _this: *mut c_void,
-    _queue: *mut c_void,
-    _context: *mut c_void,
-    callback: *const c_void,
-    token: *mut u64,
-) -> HResult {
-    if !initialized() {
-        return NOT_INITIALIZED;
-    }
-    events::add_subscription(callback, token)
-}
-
+/// XGameStreamingUnregisterConnectionStateChanged (slot 13): no registration can succeed (slot 12,
+/// XGameStreamingRegisterConnectionStateChanged, answers E_NOTIMPL: no streaming client ever
+/// connects, so its callback could never run), so there is nothing to remove.
 unsafe extern "system" fn unregister_connection_state_changed(
     _this: *mut c_void,
-    token: u64,
+    _token: u64,
     _wait: bool,
 ) -> bool {
-    events::remove_subscription(token)
+    false
 }
 
 // --- Properties of a client: no client, so E_GAMESTREAMING_CLIENT_NOT_CONNECTED --------------
@@ -334,9 +321,11 @@ unsafe extern "system" fn show_touch_controls_with_state_update_on_client(
     no_client("XGameStreamingShowTouchControlsWithStateUpdateOnClient")
 }
 
-/// The method table of the streaming object: slots 3 to 33 of interface {57786622…}. Slot 34
-/// (XGameStreamingSetResolution) stays E_NOTIMPL: the stream resolution applies to connected
-/// clients, and the page does not say what a console that is not streaming answers.
+/// The method table of the streaming object: slots 3 to 33 of interface {57786622…}, except 12.
+/// Slot 12 (XGameStreamingRegisterConnectionStateChanged) stays E_NOTIMPL, logged: no client ever
+/// connects, so the callback could never run (rule 3, no registration that never notifies).
+/// Slot 34 (XGameStreamingSetResolution) stays E_NOTIMPL: the stream resolution applies to
+/// connected clients, and the page does not say what a console that is not streaming answers.
 pub fn methods() -> Vec<(usize, *const c_void)> {
     vec![
         (3, initialize as *const c_void),
@@ -348,7 +337,6 @@ pub fn methods() -> Vec<(usize, *const c_void)> {
         (9, get_client_count as *const c_void),
         (10, get_clients as *const c_void),
         (11, get_connection_state as *const c_void),
-        (12, register_connection_state_changed as *const c_void),
         (13, unregister_connection_state_changed as *const c_void),
         (14, get_stream_added_latency as *const c_void),
         (15, get_server_location_name_size as *const c_void),
@@ -395,8 +383,13 @@ mod tests {
     }
 
     #[test]
-    fn the_table_leaves_only_the_resolution_unwritten() {
+    fn the_table_leaves_the_connection_subscription_and_the_resolution_unwritten() {
         let slots: Vec<usize> = methods().iter().map(|&(slot, _)| slot).collect();
-        assert_eq!(slots, (3..=33).collect::<Vec<_>>());
+        assert_eq!(
+            slots,
+            (3..=33).filter(|&slot| slot != 12).collect::<Vec<_>>()
+        );
+        // SAFETY: the method ignores its arguments.
+        assert!(!unsafe { unregister_connection_state_changed(std::ptr::null_mut(), 1, true) });
     }
 }

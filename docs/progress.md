@@ -89,15 +89,16 @@ On PC, each `X*` function of the GDK static library (`xgameruntime.lib`) calls `
 
 ### Change subscriptions: not implemented
 
-AnyXboxX does not track the change these three subscriptions report, so it could never call their callback. Following rule 3 (no fake success), registering returns `E_NOTIMPL` and is logged with the trace (`ANYXBOXX_TRACE=1`), no token is written, and unregistering returns `false` (nothing can be registered). The matching query always returns the current value, so a title that queries again sees the change.
+AnyXboxX does not track the change these four subscriptions report, so it could never call their callback. Following rule 3 (no fake success), registering returns `E_NOTIMPL` and is logged with the trace (`ANYXBOXX_TRACE=1`), no token is written, and unregistering returns `false` (nothing can be registered). The matching query always returns the current value, so a title that queries again sees the change.
 
 | Subscription (`E_NOTIMPL`) | Change not tracked | Current value |
 |---|---|---|
+| `XGameStreamingRegisterConnectionStateChanged` | connection of a streaming client (none ever connects) | `XGameStreamingGetConnectionState` (always `Disconnected`) |
 | `XNetworkingRegisterConnectivityHintChanged` | network connectivity of the PC | `XNetworkingGetConnectivityHint` |
 | `XUserRegisterForDeviceAssociationChanged` | controller-to-player association (not modelled) | none: `XUserFindControllerForUserWithUiAsync` gives the all-zero device id documented for PC |
 | `XUserRegisterForDefaultAudioEndpointUtf16Changed` | Windows' default communications audio device | `XUserGetDefaultAudioEndpointUtf16` |
 
-A title that treats a failed registration as fatal stops here, and the trace shows the refused call (`E_NOTIMPL`). Maintainer's decision on #156 (no exception to rule 3).
+A title that treats a failed registration as fatal stops here, and the trace shows the refused call (`E_NOTIMPL`). Maintainer's decision on #156 (no exception to rule 3), applied to the streaming connection on #231.
 
 ## Xbox Series X identity
 

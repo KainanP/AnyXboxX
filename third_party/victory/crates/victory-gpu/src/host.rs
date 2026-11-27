@@ -2848,6 +2848,10 @@ struct Line {
     in_hand: Vec<(usize, crate::queue::Written, usize)>,
     /// With [`card_steps`]: what the flights being landed write.
     landing: Vec<card_steps::Writer>,
+    /// With [`relay`]: items the landing thread has taken out of `line`,
+    /// and of those the ones it has done, since the start.
+    taken: u64,
+    done: u64,
 }
 
 // SAFETY: D3D12 objects (free-threaded) and host lists nothing records
@@ -2864,6 +2868,8 @@ static LINE: Mutex<Line> = Mutex::new(Line {
     landed: Vec::new(),
     in_hand: Vec::new(),
     landing: Vec::new(),
+    taken: 0,
+    done: 0,
 });
 /// Told when a flight joins [`LINE`] or it is poked.
 static LINE_MOVED: std::sync::Condvar = std::sync::Condvar::new();
@@ -3422,6 +3428,15 @@ pub(crate) fn settle_now(why: usize) {
     let Some(host) = host() else {
         return;
     };
+    if relay() && std::env::var_os("VICTORY_SETTLE_OUTSIDE").is_some() {
+        let goal = {
+            let _barrier = census::take(&host.submitted, census::settle_place(why));
+            let line = line();
+            line.taken + line.line.len() as u64
+        };
+        relay_wait(why, |line| line.done >= goal);
+        return;
+    }
     let mut submitted = census::take(&host.submitted, census::settle_place(why));
     host.settle(&mut submitted, why);
 }
@@ -3718,6 +3733,7 @@ fn relay_worker() {
                     break Err(fences[0].unwrap_or(0));
                 }
                 line.settling = true;
+                line.taken += n as u64;
                 let items: Vec<Late> = line.line.drain(..n).collect();
                 line.in_hand = items
                     .iter()
@@ -5337,6 +5353,8 @@ impl Host {
                 landed: kept,
                 in_hand,
                 landing,
+                taken,
+                done,
                 ..
             } = &mut *line;
             kept.extend(landed);
@@ -5355,6 +5373,7 @@ impl Host {
             }
             join_ranges(written, ranges);
             *settling = false;
+            *done = *taken;
             // The landed lists are reset, and what queues hold looked at,
             // by the helper thread (they take locks a waiter may hold).
             *poke = true;

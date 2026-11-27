@@ -89,6 +89,8 @@ pub mod list;
 pub mod object;
 pub mod pipeline;
 #[cfg(windows)]
+mod drop_report;
+#[cfg(windows)]
 mod picked;
 #[cfg(windows)]
 mod pool;

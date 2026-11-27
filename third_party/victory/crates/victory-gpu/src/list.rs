@@ -1961,6 +1961,9 @@ mod state {
         if indirect != 0 {
             static ONCE: std::sync::Once = std::sync::Once::new();
             ONCE.call_once(|| tracing::warn!("indirect mesh dispatches dropped"));
+            if crate::drop_report::enabled() {
+                with_state(this, |_, s| s.report_unsupported_mesh_indirect());
+            }
             return;
         }
         with_state(this, |list, s| s.dispatch_mesh(list, x));
@@ -2053,6 +2056,10 @@ extern "system" fn execute_indirect(
     count_draw();
     TOTALS[2].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let Some((stride, args)) = crate::signature::layout(signature) else {
+        #[cfg(windows)]
+        if crate::drop_report::enabled() {
+            crate::drop_report::record("indirect: unknown signature; shaders=unknown".to_owned());
+        }
         return;
     };
     let address = crate::resource::buffer_bytes(arguments).map(|(p, _)| p as u64 + offset);
@@ -2069,6 +2076,9 @@ extern "system" fn execute_indirect(
             ran = s.execute_indirect(list, (kind, stride, max), address, counter);
         });
     } else {
+        if crate::drop_report::enabled() {
+            with_state(this, |_, s| s.report_indirect_layout());
+        }
         #[cfg(all(windows, feature = "diagnostics"))]
         crate::pipeline::note_why(format!(
             "indirect signature {args:?}: arguments in a buffer {}, count in a buffer {}",

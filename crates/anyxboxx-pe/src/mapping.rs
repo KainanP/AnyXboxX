@@ -3,11 +3,14 @@
 
 use crate::headers::Headers;
 use crate::{LoadError, MAX_IMAGE, PAGE, align};
+use victory_pe::layout::dir;
 
 /// `IMAGE_DIRECTORY_ENTRY_BASERELOC`.
 pub const DIR_RELOC: usize = 5;
-/// The certificate directory uses a file offset instead of an RVA.
+/// File ranges for the certificate and bound-import tables.
 const DIR_SECURITY: usize = 4;
+const DIR_BOUND_IMPORT: usize = 11;
+const DIR_EXPORT: usize = 0;
 
 const SCN_EXEC: u32 = 0x2000_0000;
 const SCN_READ: u32 = 0x4000_0000;
@@ -28,16 +31,30 @@ pub(crate) struct ImageLayout<'a> {
     data: &'a [u8],
     headers: &'a Headers,
     size: usize,
+    header_len: usize,
 }
 
 impl<'a> ImageLayout<'a> {
     pub(crate) fn check(data: &'a [u8], headers: &'a Headers) -> Result<Self, LoadError> {
         let image_size = u64::from(headers.size_of_image);
-        let header_len = u64::from(headers.size_of_headers);
+        let file_len = data.len() as u64;
+        let declared_headers = u64::from(headers.size_of_headers);
+        let header_len = if declared_headers > file_len {
+            let section_start = headers
+                .sections
+                .first()
+                .map_or(image_size, |section| u64::from(section.virtual_address));
+            file_len.min(section_start)
+        } else {
+            declared_headers
+        };
         if image_size > MAX_IMAGE {
             return Err(LoadError::TooLarge);
         }
-        if image_size == 0 || header_len > image_size {
+        if image_size == 0
+            || header_len > image_size
+            || header_len < headers.section_table_end as u64
+        {
             return Err(LoadError::BadHeaders);
         }
         let section_alignment = u64::from(headers.section_alignment);
@@ -47,38 +64,40 @@ impl<'a> ImageLayout<'a> {
             || file_alignment > section_alignment
             || (section_alignment < PAGE && section_alignment != file_alignment)
             || !image_size.is_multiple_of(section_alignment)
-            || !header_len.is_multiple_of(file_alignment)
         {
             return Err(LoadError::Alignment);
         }
 
-        let file_len = data.len() as u64;
         let mut last_end = header_len;
         for section in &headers.sections {
             // Widen the input fields before adding. Either sum can exceed a 32-bit PE RVA.
             let start = u64::from(section.virtual_address);
-            let end = start + u64::from(section.virtual_size.max(section.raw_size));
+            let length = u64::from(section.mapped_size());
+            let end = start + length.div_ceil(section_alignment) * section_alignment;
             if !start.is_multiple_of(section_alignment) || start < last_end || end > image_size {
                 return Err(LoadError::Section(start));
             }
             let raw = u64::from(section.raw_offset);
             let raw_size = u64::from(section.raw_size);
+            // Use the same declared file offset as the import and export parser.
             if raw_size != 0
-                && (raw < header_len
-                    || !raw.is_multiple_of(file_alignment)
-                    || raw + raw_size > file_len)
+                && (raw < headers.section_table_end as u64 || raw + raw_size > file_len)
             {
                 return Err(LoadError::RawSection(start));
             }
             last_end = end;
         }
-        for (index, &(rva, length)) in headers.directories().iter().enumerate() {
-            let bound = if index == DIR_SECURITY {
-                file_len
-            } else {
-                image_size
-            };
-            if (rva == 0 && length != 0) || u64::from(rva) + u64::from(length) > bound {
+        for (index, bound) in [
+            (DIR_EXPORT, image_size),
+            (dir::IMPORT, image_size),
+            (DIR_RELOC, image_size),
+            (crate::tls::DIR_TLS, image_size),
+            (crate::DIR_IMPORT_DELAY, image_size),
+            (DIR_SECURITY, file_len),
+            (DIR_BOUND_IMPORT, file_len),
+        ] {
+            let (address, length) = headers.directory(index);
+            if address != 0 && u64::from(address) + u64::from(length) > bound {
                 return Err(LoadError::DirectoryRange(index));
             }
         }
@@ -86,6 +105,7 @@ impl<'a> ImageLayout<'a> {
             data,
             headers,
             size: align(image_size) as usize,
+            header_len: header_len as usize,
         })
     }
 
@@ -95,7 +115,7 @@ impl<'a> ImageLayout<'a> {
 
     pub(crate) fn map(&self) -> Result<Vec<u8>, LoadError> {
         let mut image = allocate_filled(self.size, 0)?;
-        let header_len = self.headers.size_of_headers as usize;
+        let header_len = self.header_len;
         image[..header_len].copy_from_slice(&self.data[..header_len]);
         for section in self
             .headers
@@ -105,7 +125,7 @@ impl<'a> ImageLayout<'a> {
         {
             let src = section.raw_offset as usize;
             let dst = section.virtual_address as usize;
-            let len = section.raw_size as usize;
+            let len = section.copied_size() as usize;
             image[dst..dst + len].copy_from_slice(&self.data[src..src + len]);
         }
         Ok(image)
@@ -121,7 +141,7 @@ impl<'a> ImageLayout<'a> {
         let mut pages = allocate_filled(self.size / PAGE as usize, PROT_READ)?;
         for section in &self.headers.sections {
             let first = section.virtual_address as usize / PAGE as usize;
-            let length = align(u64::from(section.virtual_size.max(section.raw_size)));
+            let length = align(u64::from(section.mapped_size()));
             let count = (length / PAGE) as usize;
             pages[first..first + count].fill(protection(section.characteristics));
         }
@@ -130,7 +150,7 @@ impl<'a> ImageLayout<'a> {
 
     /// An RVA span directly backed by file bytes, when wholly in one header or section range.
     fn file_bytes(&self, at: usize, len: usize) -> Option<&'a [u8]> {
-        let header_len = self.headers.size_of_headers as usize;
+        let header_len = self.header_len;
         if at < header_len {
             return (at + len <= header_len).then(|| &self.data[at..at + len]);
         }
@@ -138,7 +158,7 @@ impl<'a> ImageLayout<'a> {
         let index = sections.partition_point(|section| section.virtual_address as usize <= at);
         let section = sections.get(index.checked_sub(1)?)?;
         let offset = at - section.virtual_address as usize;
-        if offset + len > section.raw_size as usize {
+        if offset + len > section.copied_size() as usize {
             return None;
         }
         let raw = section.raw_offset as usize + offset;
@@ -147,7 +167,7 @@ impl<'a> ImageLayout<'a> {
 
     pub(crate) fn relocations(&self) -> Result<Relocations<'_, 'a>, LoadError> {
         let (rva, size) = self.headers.directory(DIR_RELOC);
-        let (start, length) = (rva as usize, size as usize);
+        let (start, length) = (rva as usize, if rva == 0 { 0 } else { size as usize });
         let mut table = Relocations {
             layout: self,
             start,

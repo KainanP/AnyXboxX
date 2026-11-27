@@ -47,6 +47,19 @@ pub struct Section {
     pub characteristics: u32,
 }
 
+impl Section {
+    pub(crate) fn mapped_size(&self) -> u32 {
+        match self.virtual_size {
+            0 => self.raw_size,
+            size => size,
+        }
+    }
+
+    pub(crate) fn copied_size(&self) -> u32 {
+        self.raw_size.min(self.mapped_size())
+    }
+}
+
 /// The header fields the loader uses.
 #[derive(Debug, Clone)]
 pub struct Headers {
@@ -58,6 +71,7 @@ pub struct Headers {
     pub sections: Vec<Section>,
     pub(crate) section_alignment: u32,
     pub(crate) file_alignment: u32,
+    pub(crate) section_table_end: usize,
     data: Vec<(u32, u32)>,
 }
 
@@ -92,7 +106,7 @@ impl Headers {
         let optional = data.get(opt..section_table).ok_or_else(truncated)?;
         let size_of_headers = u32_at(optional, OPT_SIZE_OF_HEADERS)?;
         let header_len = size_of_headers as usize;
-        if table_end > header_len || header_len > data.len() {
+        if table_end > header_len.min(data.len()) {
             return Err(LoadError::HeaderRange);
         }
         Ok(Headers {
@@ -103,6 +117,7 @@ impl Headers {
             size_of_headers,
             section_alignment: u32_at(optional, OPT_SECTION_ALIGNMENT)?,
             file_alignment: u32_at(optional, OPT_FILE_ALIGNMENT)?,
+            section_table_end: table_end,
             sections: (0..count)
                 .map(|index| read_section(data, section_table + index * SECTION_HEADER_SIZE))
                 .collect::<Result<_, _>>()?,
@@ -123,19 +138,14 @@ impl Headers {
     pub fn has_directory(&self, index: usize) -> bool {
         self.directory(index).0 != 0
     }
-
-    pub(crate) fn directories(&self) -> &[(u32, u32)] {
-        &self.data
-    }
 }
 
 fn read_directories(optional: &[u8]) -> Result<Vec<(u32, u32)>, LoadError> {
     let count = u32_at(optional, layout::OPT_NUMBER_OF_RVA_AND_SIZES)? as usize;
-    (0..count.min(MAX_DIRECTORIES))
-        .map(|index| {
-            let at = layout::OPT_DATA_DIRECTORY + index * layout::DATA_DIRECTORY_SIZE;
-            Ok((u32_at(optional, at)?, u32_at(optional, at + 4)?))
-        })
+    optional[layout::OPT_DATA_DIRECTORY..]
+        .chunks_exact(layout::DATA_DIRECTORY_SIZE)
+        .take(count.min(MAX_DIRECTORIES))
+        .map(|entry| Ok((u32_at(entry, 0)?, u32_at(entry, 4)?)))
         .collect()
 }
 

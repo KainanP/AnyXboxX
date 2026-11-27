@@ -232,6 +232,9 @@ const SECTION: usize = OPTIONAL + 240;
 const IMAGE_SIZE: usize = OPTIONAL + 56;
 const HEADER_SIZE: usize = OPTIONAL + 60;
 
+#[path = "read_pe/layout_compat.rs"]
+mod layout_compat;
+
 fn put_u32(file: &mut [u8], offset: usize, value: u32) {
     file[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }

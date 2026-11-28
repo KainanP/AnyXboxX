@@ -106,6 +106,8 @@ mod probe_tests;
 #[cfg(all(test, windows))]
 mod size_tests;
 #[cfg(all(test, windows))]
+mod skinning_bench;
+#[cfg(all(test, windows))]
 mod valu_tests;
 #[cfg(all(test, windows))]
 mod waterfall_tests;

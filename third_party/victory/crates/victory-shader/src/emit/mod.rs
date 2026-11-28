@@ -88,6 +88,8 @@ mod cube_lod_tests;
 mod diff_tests;
 #[cfg(all(test, windows))]
 mod intersect_tests;
+#[cfg(all(test, windows))]
+mod movrel_tests;
 #[cfg(all(windows, any(test, feature = "host")))]
 pub mod host;
 mod loose_lds;

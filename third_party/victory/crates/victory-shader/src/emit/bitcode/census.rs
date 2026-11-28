@@ -9,7 +9,8 @@
 //! and the console program did not have: the group barriers it adds where
 //! the two host waves of a console wave64 program meet (`added_barrier`),
 //! the selects of M0-indexed register moves (`indexed_select`), 64-bit
-//! results (`wide64`), loops (`loops`: branches back), and the program's
+//! results (`wide64`), loops (`loops`: branches back to a block on the
+//! depth-first path from the entry, whatever the block numbers), and the program's
 //! shape (`lds_bytes`, `threads`, the `wave_size` it requires, 0 for none).
 //! Which form of a wave64 program was emitted is [`form`]. Counts only: no
 //! code.
@@ -203,8 +204,6 @@ impl Module {
             }
             c.counts[k("blocks")] += 1;
             let _: Option<Term> = blk.term;
-            // (blocks are written in this order: a branch back is a loop's)
-            c.counts[k("loops")] += super::successors(blk.term).iter().filter(|&&s| s <= b).count() as u32;
             for &i in blk
                 .phis
                 .iter()
@@ -240,6 +239,11 @@ impl Module {
                 let _ = V::Inst(i);
             }
         }
+        // Branches back to a block still on the depth-first path from the entry. Not
+        // block numbers: the lowering appends the blocks it makes (a critical edge's, a
+        // guarded store's join), so their branches into the next console block go to a
+        // lower number while going forward.
+        c.counts[k("loops")] = self.back_edges().iter().map(|(_, from)| from.len() as u32).sum();
         c.counts[k("lds_bytes")] = self
             .globals
             .iter()
@@ -259,5 +263,54 @@ impl Module {
             TypeDef::Struct(_, fields) => fields.iter().map(|f| self.bytes(*f)).sum(),
             _ => 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Module, Term, pred};
+    use super::KINDS;
+
+    fn loops(m: &Module) -> u32 {
+        m.census().counts[KINDS.iter().position(|k| *k == "loops").expect("kind")]
+    }
+
+    /// The lowering appends the blocks it makes as it goes (a critical edge's block, the
+    /// join of a guarded store): a branch from one of them into a console block made
+    /// earlier goes to a lower block number but forward in the program. Only an edge
+    /// to a block still on the depth-first path from the entry is a loop's.
+    #[test]
+    fn census_counts_loops_not_forward_edges_into_earlier_blocks() {
+        // 0 -> {2, 1}, 2 -> 1, 1 -> ret: a diamond whose edge block (2) was made last.
+        let mut m = Module::default();
+        let (b0, b1, b2) = (m.new_block(), m.new_block(), m.new_block());
+        let c = m.bool(true);
+        m.terminate(b0, Term::CondBr(c, b2, b1));
+        m.terminate(b2, Term::Br(b1));
+        m.terminate(b1, Term::Ret);
+        assert_eq!(loops(&m), 0, "a forward edge into an earlier block is not a loop");
+
+        // 0 -> 1, 1 -> {3, 2}, 3 -> 1 (the latch, made last), 2 -> ret: one loop.
+        let mut m = Module::default();
+        let (b0, b1, b2, b3) = (m.new_block(), m.new_block(), m.new_block(), m.new_block());
+        let (x, y) = (m.i32(1), m.i32(2));
+        let c = m.cmp(b1, pred::EQ, x, y);
+        m.terminate(b0, Term::Br(b1));
+        m.terminate(b1, Term::CondBr(c, b3, b2));
+        m.terminate(b3, Term::Br(b1));
+        m.terminate(b2, Term::Ret);
+        assert_eq!(loops(&m), 1, "one branch back");
+
+        // A loop whose header comes after its latch in block order: 0 -> 2, 2 -> {1, 3},
+        // 1 -> 2, 3 -> ret.
+        let mut m = Module::default();
+        let (b0, b1, b2, b3) = (m.new_block(), m.new_block(), m.new_block(), m.new_block());
+        let (x, y) = (m.i32(1), m.i32(2));
+        let c = m.cmp(b2, pred::EQ, x, y);
+        m.terminate(b0, Term::Br(b2));
+        m.terminate(b2, Term::CondBr(c, b1, b3));
+        m.terminate(b1, Term::Br(b2));
+        m.terminate(b3, Term::Ret);
+        assert_eq!(loops(&m), 1, "a back edge to a later-numbered header");
     }
 }

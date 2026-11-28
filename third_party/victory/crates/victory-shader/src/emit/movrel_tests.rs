@@ -294,67 +294,83 @@ fn timed_plain(host: &Host, vgprs: u32) -> f64 {
     ms[ms.len() / 2]
 }
 
-/// A console wave32 program of 20 registers: v1..v18 hold `v0 + k`, v19 holds 7777, then
-/// `v_movrels_b32 v19, v1` with M0 = s2 (a root constant) is stored at dword `v0`.
-fn one_read() -> NativeProgram {
-    let mut native = program(20, true);
+/// A console wave32 program of `vgprs` registers: v1..v(vgprs-2) hold `v0 + k`, the last one
+/// holds 7777, then `v_movrels_b32 v(vgprs-1), v1` with M0 = s2 (a root constant) is stored at
+/// dword `v0`. M0 may name `vgprs - 1` registers.
+fn one_read(vgprs: u32) -> NativeProgram {
+    let last = vgprs - 1;
+    let mut native = program(vgprs, true);
     let mut w = vec![
         0xBE85_0380, // s_mov_b32 s5, 0
         0x3D << 26 | 0x02 << 18 | 8 << 6 | 2,
         125 << 25, // s_load_dwordx4 s[8:11], s[4:5], 0
     ];
-    for r in 1..19 {
-        w.push(vop2(0x25, r, k(r), 0)); // v_add_nc_u32 vr, r, v0
+    for r in 1..last {
+        if r <= 64 {
+            w.push(vop2(0x25, r, k(r), 0)); // v_add_nc_u32 vr, r, v0
+        } else {
+            w.extend([vop2(0x25, r, LIT, 0), r]);
+        }
     }
     w.extend([
-        vop1(0x01, 19, LIT), // v_mov_b32 v19, 7777
+        vop1(0x01, last, LIT), // v_mov_b32 vlast, 7777
         7777,
-        sop1(0x03, M0, 2),     // s_mov_b32 m0, s2
-        vop1(0x43, 19, v(1)),  // v_movrels_b32 v19, v1
-        vop2(0x1A, 1, k(2), 0), // v_lshlrev_b32 v1, 2, v0
-        0xE070_1000,            // buffer_store_dword v19, v1, s[8:11], 0 offen
-        0x8002_0000 | 19 << 8 | 1,
+        sop1(0x03, M0, 2),       // s_mov_b32 m0, s2
+        vop1(0x43, last, v(1)),  // v_movrels_b32 vlast, v1
+        vop2(0x1A, 1, k(2), 0),  // v_lshlrev_b32 v1, 2, v0
+        0xE070_1000,             // buffer_store_dword vlast, v1, s[8:11], 0 offen
+        0x8002_0000 | last << 8 | 1,
         S_ENDPGM,
     ]);
     native.code = w.iter().flat_map(|w| w.to_le_bytes()).collect();
     native
 }
 
-/// Every M0 reads the register it names, `v[1 + M0]`, while that is one of the program's 20,
-/// and 0 past them (the register numbers wrap no further): in range, at the last register,
-/// at and past the next power of two of the 19 registers it may name, and huge.
+/// Every M0 reads the register it names, `v[1 + M0]`, while that is one of the program's, and
+/// 0 past them (the register numbers wrap no further; the console's result there is not
+/// specified, 0 is the translation's): from 0 up to the last register (its 7777) and the first
+/// past it, at and past the next power of two of the registers M0 may name, and huge. The
+/// register counts are not powers of two: 9 (10 VGPRs), 19 and 129 (130 VGPRs, whose tree is 8
+/// levels deep), the cross-check akimfomin suggested.
 #[test]
 fn an_indexed_read_takes_the_register_m0_names_and_0_past_them() {
-    let shader = translated(&one_read());
     let Ok(host) = Host::new(false) else {
         eprintln!("no hardware device; not run");
         return;
     };
-    let (root, pso) = host.compute_pipeline(&shader).expect("pipeline");
     let _one = super::valu_tests::ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    for m0 in [0u32, 1, 5, 16, 17, 18, 19, 31, 32, 33, 1000, 0x8000_0000, u32::MAX] {
-        let mut ud = vec![0u32; shader.user_data_dwords().max(1) as usize];
-        for u in &shader.user_data {
-            if let (RootType::Constants, 0, 2) = (u.root, u.slot, u.dword) {
-                ud[u.index as usize] = m0;
+    for vgprs in [10u32, 20, 130] {
+        let shader = translated(&one_read(vgprs));
+        let (root, pso) = host.compute_pipeline(&shader).expect("pipeline");
+        // M0 names v1..v(vgprs-1): M0 = vgprs - 2 is the last register (7777)
+        let (named, pow2) = (vgprs - 1, (vgprs - 1).next_power_of_two());
+        let mut m0s: Vec<u32> = (0..=named + 1).collect();
+        m0s.extend([pow2 - 1, pow2, pow2 + 1, 2 * pow2, 1000, 0x8000_0000, u32::MAX]);
+        for m0 in m0s {
+            let mut ud = vec![0u32; shader.user_data_dwords().max(1) as usize];
+            for u in &shader.user_data {
+                if let (RootType::Constants, 0, 2) = (u.root, u.slot, u.dword) {
+                    ud[u.index as usize] = m0;
+                }
             }
+            let d = Dispatch {
+                roots: vec![(0, Root::Constants(ud))],
+                views: &[View::RawUav(THREADS)],
+                samplers: &[],
+                groups: [1, 1, 1],
+            };
+            let out = host.dispatch(&root, &pso, &d).expect("dispatch");
+            let want: Vec<u32> = (0..THREADS)
+                .map(|t| match m0 {
+                    m if m < vgprs - 2 => t + 1 + m,
+                    m if m == vgprs - 2 => 7777,
+                    _ => 0,
+                })
+                .collect();
+            assert_eq!(out[0], want, "{named} registers, M0 = {m0:#x}");
         }
-        let d = Dispatch {
-            roots: vec![(0, Root::Constants(ud))],
-            views: &[View::RawUav(THREADS)],
-            samplers: &[],
-            groups: [1, 1, 1],
-        };
-        let out = host.dispatch(&root, &pso, &d).expect("dispatch");
-        let want: Vec<u32> = (0..THREADS)
-            .map(|t| match m0 {
-                0..=17 => t + 1 + m0,
-                18 => 7777,
-                _ => 0,
-            })
-            .collect();
-        assert_eq!(out[0], want, "M0 = {m0:#x}");
     }
+    eprintln!("{:?}: every M0 read its register (9, 19 and 129 registers)", host.adapter_name());
 }
 
 /// An M0-indexed read among the 129 registers v1..v129 costs a few compares on M0's 8 bits (a

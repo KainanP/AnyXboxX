@@ -535,3 +535,238 @@ fn every_exchange_gives_the_consoles_results() {
     }
     eprintln!("adapter {:?}: every construct matched the console", host.adapter_name());
 }
+
+/// One LDS access of [`steps_program`], in a round's order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Step {
+    /// `ds_write_b32` of `tid + round + 1000 * n` (n: the step's place) to the thread's dword.
+    Write,
+    /// `ds_read_b32` of the dword of console lane `lane + offset` (mod 64) of the thread's
+    /// console wave, folded in as `acc = (acc << 1) ^ x`.
+    Read(u32),
+    /// `s_barrier`.
+    Barrier,
+    /// A ballot (`s_bcnt1` of `v_cmp`: the console lanes below 20 + n, n the step's place),
+    /// folded in like a read:
+    /// an exchange between the halves, and what puts a group of two console waves in the
+    /// split form.
+    Ballot,
+}
+
+/// A console wave64 program of `threads` threads: `s1` rounds of `steps` (the first a write),
+/// each thread storing its fold at dword `v0` of the raw UAV.
+pub(super) fn steps_program(steps: &[Step], threads: u32) -> NativeProgram {
+    assert_eq!(steps.first(), Some(&Step::Write), "the first step writes");
+    let mut w = vec![
+        0xBE85_0380, // s_mov_b32 s5, 0
+        0x3D << 26 | 0x02 << 18 | 8 << 6 | 2,
+        125 << 25,              // s_load_dwordx4 s[8:11], s[4:5], 0
+        vop1(0x01, 10, k(0)),   // v_mov_b32 v10, 0
+        sop1(0x03, 20, k(0)),   // s_mov_b32 s20, 0
+        vop2(0x1A, 8, k(2), 0), // v_lshlrev_b32 v8, 2, v0
+        vop2(0x1B, 9, LIT, 0),  // v_and_b32 v9, ~63, v0 (the console wave's first thread)
+        0xFFFF_FFC0,
+        vop2(0x1B, 5, k(63), 0), // v_and_b32 v5, 63, v0 (the console lane)
+    ];
+    // each read's address in v11.., in the order of the reads
+    let reads: Vec<u32> = steps
+        .iter()
+        .filter_map(|s| if let Step::Read(o) = s { Some(*o) } else { None })
+        .collect();
+    assert!(reads.len() <= 16);
+    for (n, &o) in reads.iter().enumerate() {
+        let r = 11 + n as u32;
+        w.extend([
+            vop2(0x25, r, LIT, 0), // v_add_nc_u32 vr, o, v0
+            o,
+            vop2(0x1B, r, k(63), r), // v_and_b32 vr, 63, vr
+            vop2(0x1C, r, v(9), r),  // v_or_b32 vr, v9, vr
+            vop2(0x1A, r, k(2), r),  // v_lshlrev_b32 vr, 2, vr
+        ]);
+    }
+    let top = w.len();
+    w.push(vop2(0x25, 4, 20, 0)); // v_add_nc_u32 v4, s20, v0
+    let mut read = 0;
+    for (n, s) in steps.iter().enumerate() {
+        match *s {
+            Step::Write => {
+                w.extend([vop2(0x25, 6, LIT, 4), 1000 * n as u32]); // v_add_nc_u32 v6, 1000n, v4
+                w.extend(ds(DS_WRITE_B32, 0, 8, 6)); // ds_write_b32 v8, v6
+            }
+            Step::Read(_) => {
+                w.extend(ds(DS_READ_B32, LDS_DATA, 11 + read, 0)); // ds_read_b32 v27, v(11+n)
+                w.extend([
+                    vop2(0x1A, 10, k(1), 10),        // v_lshlrev_b32 v10, 1, v10
+                    vop2(0x1D, 10, v(LDS_DATA), 10), // v_xor_b32 v10, v27, v10
+                ]);
+                read += 1;
+            }
+            Step::Barrier => w.push(sopp(0x0A, 0)), // s_barrier
+            Step::Ballot => w.extend([
+                vopc(0xC4, LIT, 5), // v_cmp_gt_u32 vcc, 20 + n, v5
+                20 + n as u32,
+                sop1(0x10, 16, VCC),       // s_bcnt1_i32_b64 s16, vcc
+                vop2(0x1A, 10, k(1), 10),  // v_lshlrev_b32 v10, 1, v10
+                vop2(0x1D, 10, 16, 10),    // v_xor_b32 v10, s16, v10
+            ]),
+        }
+    }
+    w.extend([
+        sop2(0x00, 20, 20, k(1)), // s_add_u32 s20, s20, 1
+        sopc(0x0A, 20, 1),        // s_cmp_lt_u32 s20, s1
+    ]);
+    let back = top as i32 - (w.len() as i32 + 1);
+    w.push(sopp(SCC_LOOP, back as i16));
+    w.extend([
+        vop2(0x1A, 1, k(2), 0), // v_lshlrev_b32 v1, 2, v0
+        0xE070_1000,            // buffer_store_dword v10, v1, s[8:11], 0 offen
+        0x8002_0000 | 10 << 8 | 1,
+        S_ENDPGM,
+    ]);
+    // (the layout, bindings and LDS size of the LDS construct's program)
+    let mut p = program(Construct::Lds { reads: 1 }, threads);
+    p.code = w.iter().flat_map(|w| w.to_le_bytes()).collect();
+    p
+}
+
+/// What every thread of [`steps_program`] stores after `rounds` rounds, as the console runs
+/// it: the wave's lanes go in step, so every lane's write lands before any lane's next access.
+pub(super) fn steps_want(steps: &[Step], threads: u32, rounds: u32) -> Vec<u32> {
+    let mut lds = vec![0u32; threads as usize];
+    let mut acc = vec![0u32; threads as usize];
+    for r in 0..rounds {
+        for (n, s) in steps.iter().enumerate() {
+            match *s {
+                Step::Write => {
+                    for t in 0..threads {
+                        lds[t as usize] = t + r + 1000 * n as u32;
+                    }
+                }
+                Step::Read(o) => {
+                    for t in 0..threads {
+                        let x = lds[((t & !63) | ((t + o) & 63)) as usize];
+                        acc[t as usize] = acc[t as usize] << 1 ^ x;
+                    }
+                }
+                Step::Barrier => {}
+                Step::Ballot => acc.iter_mut().for_each(|a| *a = *a << 1 ^ (20 + n as u32)),
+            }
+        }
+    }
+    acc
+}
+
+/// The census of `steps`' translated program, by kind.
+fn steps_census(steps: &[Step], threads: u32) -> std::collections::HashMap<&'static str, u32> {
+    let shader = super::census::with(|| translated(&steps_program(steps, threads)));
+    let census = super::census::take(&shader.dxil).expect("counted");
+    super::census::KINDS.iter().copied().zip(census.counts).collect()
+}
+
+use Step::{Ballot as X, Barrier as B, Read as R, Write as W};
+
+/// LDS interleavings a shared read barrier must keep right: a write, a read of the other
+/// half, a write over what it read; runs of reads across both halves; back-to-back writes;
+/// the title's `s_barrier` or an exchange between reads.
+const INTERLEAVINGS: [&[Step]; 9] = [
+    &[W, R(32), W, R(32)],
+    &[W, R(1), R(33), R(31), R(63), W, R(32), R(0)],
+    &[W, R(32), R(17), W, W, R(5)],
+    &[W, R(32), B, R(33), R(1)],
+    &[W, W, R(40), R(8), R(24), R(56), R(0), R(32)],
+    &[W, R(0), W, R(0), W, R(63)],
+    &[W, R(32), X, R(33), W, R(1)],
+    &[W, R(1), R(33), X, X, R(32), R(31), W, R(0), R(63)],
+    &[W, X, X, X, R(32), X, W, X, X],
+];
+
+/// The group barriers of the split form: one before each LDS write and one before the first
+/// read after a write (or after the title's `s_barrier`), none before a read that follows a
+/// read.
+#[test]
+fn split_lds_reads_share_one_barrier() {
+    for reads in [1, 2, 4, 8, 16] {
+        let c = census(Construct::Lds { reads }, 64);
+        assert_eq!(c["barrier"], 2, "1 write + {reads} reads: {c:?}");
+        assert_eq!(c["added_barrier"], 2, "1 write + {reads} reads: {c:?}");
+    }
+    // (a program that exchanges has one barrier at entry, the thread ticket; each exchange
+    // has one, and a run of exchanges in a block one more after the last; a read after an
+    // exchange meets again)
+    let want: [usize; 9] = [4, 4, 5, 4, 3, 6, 8, 9, 11];
+    for (steps, want) in INTERLEAVINGS.iter().zip(want) {
+        let c = steps_census(steps, 64);
+        // (the title's s_barrier is the program's own, not added)
+        let own = steps.iter().filter(|s| **s == B).count();
+        assert_eq!(c["barrier"] as usize, want, "{steps:?}: {c:?}");
+        assert_eq!(c["added_barrier"] as usize, want - own, "{steps:?}: {c:?}");
+    }
+}
+
+/// Back-to-back exchanges take the two pairs of exchange dwords in turn and share their
+/// meetings: one barrier each, and one after the last of the run (plus the thread ticket's).
+#[test]
+fn back_to_back_exchanges_share_meetings() {
+    for (c, want) in [(Construct::Ballot, 3), (Construct::TwoBallots, 4)] {
+        for threads in [64, 256] {
+            let counts = census(c, threads);
+            assert_eq!(counts["barrier"], want, "{} in groups of {threads}: {counts:?}", c.name());
+        }
+    }
+    // the pairs a run takes in turn (a pair is written again only after a meeting that
+    // follows every thread's reads of it); a title read in between does not end the run,
+    // the end of the block does
+    let pairs = |steps: &[Step]| {
+        lower::TEST_EXCHANGE_PAIRS.with(|p| p.borrow_mut().clear());
+        translated(&steps_program(steps, 64));
+        lower::TEST_EXCHANGE_PAIRS.with(|p| p.take())
+    };
+    assert_eq!(pairs(&[W, X, X, X, R(32), X]), [false, true, false, true]);
+    assert_eq!(pairs(&[W, X]), [false]);
+}
+
+/// Rounds and groups of the interleavings' run: enough for the two host waves to drift.
+const STEP_ROUNDS: u32 = 256;
+const STEP_GROUPS: u32 = 1024;
+
+/// Every interleaving gives the console's folds on the host device, in groups of one console
+/// wave, and of two where the program exchanges (without, a group of two console waves is
+/// not split).
+#[test]
+fn split_lds_interleavings_give_the_consoles_results() {
+    let Ok(host) = Host::new(false) else {
+        eprintln!("no hardware device; not run");
+        return;
+    };
+    let _one = super::valu_tests::ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    for threads in [64, 128] {
+        for steps in INTERLEAVINGS {
+            if threads > 64 && !steps.contains(&X) {
+                continue;
+            }
+            let shader = translated(&steps_program(steps, threads));
+            let (root, pso) = match host.compute_pipeline(&shader) {
+                Ok(x) => x,
+                Err(e) => {
+                    eprintln!("the device does not take {steps:?}: {e}; not run");
+                    return;
+                }
+            };
+            let mut ud = vec![0u32; shader.user_data_dwords().max(1) as usize];
+            for u in &shader.user_data {
+                if let (RootType::Constants, 0, 1) = (u.root, u.slot, u.dword) {
+                    ud[u.index as usize] = STEP_ROUNDS;
+                }
+            }
+            let d = Dispatch {
+                roots: vec![(0, Root::Constants(ud))],
+                views: &[View::RawUav(threads)],
+                samplers: &[],
+                groups: [STEP_GROUPS, 1, 1],
+            };
+            let out = host.dispatch(&root, &pso, &d).expect("dispatch");
+            assert_eq!(out[0], steps_want(steps, threads, STEP_ROUNDS), "{steps:?} in groups of {threads}");
+        }
+    }
+    eprintln!("adapter {:?}: every interleaving matched the console", host.adapter_name());
+}

@@ -20,6 +20,8 @@ use crate::resource::PAGEABLE_IIDS;
 
 #[cfg(windows)]
 pub(crate) mod thin;
+#[cfg(all(test, windows))]
+mod barrier_bench;
 
 const ALLOCATOR_IIDS: [Iid; 4] = [
     guid(

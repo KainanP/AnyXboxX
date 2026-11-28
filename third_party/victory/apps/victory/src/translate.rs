@@ -743,7 +743,8 @@ fn translate_programs(
 /// its label (with `#` and the 16-digit hash a run's log names it by), the
 /// form a wave64 program was emitted in and its host bindings, the console
 /// program's instructions by encoding class (a static count of the whole
-/// program, not of one thread's path), and the host module's instructions
+/// program, not of one thread's path) and those of them the lowering spells out
+/// (`emit::census::SPELLED`), and the host module's instructions
 /// and costs by kind (`emit::census::KINDS`). Counts only, no code.
 fn census_line(label: &str, native: &NativeProgram, p: &ir::Program, shader: &emit::HostShader) {
     use std::io::Write;
@@ -761,6 +762,7 @@ fn census_line(label: &str, native: &NativeProgram, p: &ir::Program, shader: &em
     };
     // total, vector, scalar, descriptor loads, buffer and memory, image, LDS, control, other
     let mut console = [0u32; 9];
+    let mut spelled = [0u32; emit::census::SPELLED.len()];
     for inst in p.blocks.iter().flat_map(|b| &b.insts) {
         console[0] += 1;
         let k = match &inst.fields {
@@ -774,6 +776,17 @@ fn census_line(label: &str, native: &NativeProgram, p: &ir::Program, shader: &em
             _ => 8,
         };
         console[k] += 1;
+        if let Fields::Valu(v) = &inst.fields {
+            // (codes 251-254 are vccz, execz, scc and lds_direct, not constants)
+            let constant = v.src.iter().any(|s| match s {
+                victory_shader::gfx10::Operand::Const(c) => *c <= 248,
+                victory_shader::gfx10::Operand::Literal(_) => true,
+                _ => false,
+            });
+            for c in emit::census::spelled(inst.name(), constant) {
+                spelled[c] += 1;
+            }
+        }
     }
     let mut line = format!(
         "{label}\twave64={}\tform={}\troot_cbvs={}\troot_srvs={}\troot_uavs={}\tuser_dwords={}\tsamplers={}",
@@ -787,6 +800,9 @@ fn census_line(label: &str, native: &NativeProgram, p: &ir::Program, shader: &em
     );
     for (name, n) in ["c_total", "c_valu", "c_sop", "c_smem", "c_buffer", "c_image", "c_ds", "c_sopp", "c_other"].iter().zip(console) {
         line.push_str(&format!("\t{name}={n}"));
+    }
+    for (name, n) in emit::census::SPELLED.iter().zip(spelled) {
+        line.push_str(&format!("	c_{name}={n}"));
     }
     for (name, n) in emit::census::KINDS.iter().zip(census.counts) {
         line.push_str(&format!("\t{name}={n}"));

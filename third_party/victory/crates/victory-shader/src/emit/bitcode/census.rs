@@ -55,6 +55,36 @@ pub const KINDS: [&str; 33] = [
     "wave_size",
 ];
 
+/// Console instructions the lowering spells out in several host operations, by class, for
+/// the census line (`c_` + the class): float minimum, maximum and median (`v_max_f32`,
+/// `v_min3_f32`, `v_med3_f32`...; `minmax_k` those of them with an inline or literal constant
+/// operand), round to even, sine and cosine, byte permutes, packed f16 arithmetic and the
+/// legacy multiplies. Measured on an RTX 4060 Laptop in loops of 8 dependent chains of one
+/// of them, each took 2-6 times the GPU time of the closest HLSL.
+pub const SPELLED: [&str; 7] = ["minmax", "minmax_k", "round", "trig", "perm", "pk16", "legacy"];
+
+/// The [`SPELLED`] classes console instruction `name` counts in; `constant` when one of its
+/// operands is an inline constant or a literal.
+pub fn spelled(name: &str, constant: bool) -> Vec<usize> {
+    let class = |s: &str| SPELLED.iter().position(|k| *k == s).expect("class");
+    let base = name.strip_suffix("_e64").or(name.strip_suffix("_e32")).unwrap_or(name);
+    match base {
+        "v_max_f32" | "v_min_f32" | "v_max3_f32" | "v_min3_f32" | "v_med3_f32" => {
+            let mut v = vec![class("minmax")];
+            if constant {
+                v.push(class("minmax_k"));
+            }
+            v
+        }
+        "v_rndne_f32" => vec![class("round")],
+        "v_sin_f32" | "v_cos_f32" => vec![class("trig")],
+        "v_perm_b32" => vec![class("perm")],
+        "v_mul_legacy_f32" | "v_fma_legacy_f32" | "v_mad_legacy_f32" => vec![class("legacy")],
+        n if n.starts_with("v_pk_") && n.ends_with("_f16") => vec![class("pk16")],
+        _ => Vec::new(),
+    }
+}
+
 /// The shape of a written program that its instructions do not show: its
 /// thread group and the wave size it requires.
 #[derive(Debug, Clone, Copy, Default)]
@@ -279,6 +309,20 @@ mod tests {
     /// join of a guarded store): a branch from one of them into a console block made
     /// earlier goes to a lower block number but forward in the program. Only an edge
     /// to a block still on the depth-first path from the entry is a loop's.
+    #[test]
+    fn spelled_out_instructions_by_class() {
+        let names = |n: &str, k: bool| super::spelled(n, k).into_iter().map(|c| super::SPELLED[c]).collect::<Vec<_>>();
+        assert_eq!(names("v_max_f32", false), ["minmax"]);
+        assert_eq!(names("v_med3_f32", true), ["minmax", "minmax_k"]);
+        assert_eq!(names("v_rndne_f32", false), ["round"]);
+        assert_eq!(names("v_cos_f32", false), ["trig"]);
+        assert_eq!(names("v_perm_b32", true), ["perm"]);
+        assert_eq!(names("v_pk_fma_f16", false), ["pk16"]);
+        assert_eq!(names("v_mul_legacy_f32", false), ["legacy"]);
+        assert!(names("v_pk_add_u16", false).is_empty());
+        assert!(names("v_fma_f32", true).is_empty());
+    }
+
     #[test]
     fn census_counts_loops_not_forward_edges_into_earlier_blocks() {
         // 0 -> {2, 1}, 2 -> 1, 1 -> ret: a diamond whose edge block (2) was made last.
